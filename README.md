@@ -16,5 +16,6 @@ Open `http://localhost:4173`.
 
 - The dashboard uses the demo dataset in `demo-data.js`.
 - The dashboard fetches up to ten public, unauthenticated AI-related posts from three configured Bluesky accounts on load and then every five minutes while the page is open. This makes three small feed requests per refresh; posts must match an AI-related keyword before appearing. The refresh control can request an additional sample; concurrent requests are prevented.
+- Retrieved posts are persisted to a shared Supabase Postgres archive. The Bluesky AT URI is the primary key, so repeat fetches do not add duplicate rows; Data review displays the full archived time series.
 - Leaflet, map tiles, and country boundary data are loaded from public CDNs at runtime.
 - See `global-mood-intelligence-prd.md` for the product scope and responsible-AI constraints.

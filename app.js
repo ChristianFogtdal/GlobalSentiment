@@ -5,6 +5,8 @@ const BLUESKY_AI_ACCOUNTS = ['openaibot.bsky.social', 'emollick.bsky.social', 'g
 const BLUESKY_POST_LIMIT = 10;
 const BLUESKY_POSTS_PER_ACCOUNT = 5;
 const BLUESKY_REFRESH_MS = 5 * 60 * 1000;
+const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const bluesky = { posts: [], isLoading: false, lastRequestAt: 0, error: '' };
 let activeView = 'dashboard';
 let map;
@@ -24,6 +26,64 @@ function matchesTerm(text, term) {
 }
 function isAiRelated(text) {
   return /\b(ai|artificial intelligence|llm|language model|chatgpt|gpt|claude|gemini|machine learning|deep learning|neural network|model|models)\b/i.test(text);
+}
+function formatTimestamp(value) {
+  return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
+}
+function postFromArchive(row) {
+  return {
+    uri: row.uri,
+    text: row.post_text,
+    author: row.author_handle,
+    timestamp: formatTimestamp(row.published_at),
+    url: row.source_url,
+  };
+}
+async function requestArchive(path, options = {}) {
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
+      ...options.headers,
+    },
+  });
+  if (!response.ok) throw new Error(`Archive returned ${response.status}`);
+  if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') return null;
+  return response.json();
+}
+async function loadArchive() {
+  const rows = await requestArchive('bluesky_posts?select=uri,author_handle,post_text,published_at,source_url&order=published_at.desc');
+  bluesky.posts = rows.map(postFromArchive);
+  renderSources(selectedData());
+  renderDataReview();
+}
+async function archivePosts(posts) {
+  const rows = posts.map((post) => {
+    const analysis = analysePost(post.text);
+    return {
+      uri: post.uri,
+      author_handle: post.author,
+      post_text: post.text,
+      published_at: post.publishedAt,
+      source_url: post.url,
+      sentiment_score: analysis.score,
+      sentiment_label: analysis.sentiment,
+      mood: analysis.mood,
+      emotion: analysis.emotion,
+      topic: analysis.topic,
+      rule_evidence: analysis.evidence,
+    };
+  });
+  if (!rows.length) return;
+  await requestArchive('bluesky_posts?on_conflict=uri', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=ignore-duplicates,return=minimal',
+    },
+    body: JSON.stringify(rows),
+  });
 }
 function selectedData() { return MoodData.getDashboardData(state); }
 
@@ -100,7 +160,7 @@ function renderDataReview() {
     count.textContent = 'Waiting for sample';
     return;
   }
-  count.textContent = `${bluesky.posts.length} cleaned posts`;
+  count.textContent = `${bluesky.posts.length} archived posts`;
   list.innerHTML = bluesky.posts.map((post) => {
     const analysis = analysePost(post.text);
     return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${analysis.score}/100<br><span>${escapeHtml(analysis.sentiment)}</span></td><td>${escapeHtml(analysis.mood)}</td><td>${escapeHtml(analysis.emotion)}</td><td>${escapeHtml(analysis.topic)}</td><td class="rule-evidence">${escapeHtml(analysis.evidence)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
@@ -128,7 +188,7 @@ function renderBlueskyStatus() {
     status.textContent = `${BLUESKY_AI_ACCOUNTS.length} public requests · up to ${BLUESKY_POST_LIMIT} AI posts`;
   } else if (bluesky.posts.length) {
     button.textContent = 'Refresh Bluesky AI sample';
-    status.textContent = bluesky.error || `${bluesky.posts.length} posts from ${new Set(bluesky.posts.map((post) => post.author)).size} AI sources · refreshes every 5 minutes`;
+    status.textContent = bluesky.error || `${bluesky.posts.length} archived posts from ${new Set(bluesky.posts.map((post) => post.author)).size} AI sources · refreshes every 5 minutes`;
   } else if (bluesky.error) {
     button.textContent = 'Retry Bluesky AI sample';
     status.textContent = bluesky.error;
@@ -152,7 +212,7 @@ async function loadBlueskySample() {
       const payload = await response.json();
       return payload.feed || [];
     }));
-    bluesky.posts = feeds.flat()
+    const fetchedPosts = feeds.flat()
       .map((item) => item.post)
       .filter((post) => typeof post?.record?.text === 'string' && post.record.text.trim())
       .filter((post) => isAiRelated(post.record.text))
@@ -161,13 +221,17 @@ async function loadBlueskySample() {
       .map((post) => {
         const rkey = post.uri.split('/').at(-1);
         return {
+          uri: post.uri,
           text: post.record.text.replace(/\s+/g, ' ').trim(),
           author: post.author.handle,
-          timestamp: new Date(post.indexedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC',
+          publishedAt: post.record.createdAt || post.indexedAt,
+          timestamp: formatTimestamp(post.record.createdAt || post.indexedAt),
           url: `https://bsky.app/profile/${post.author.handle}/post/${rkey}`,
         };
       });
-    if (!bluesky.posts.length) throw new Error('No public AI posts were available.');
+    if (!fetchedPosts.length) throw new Error('No public AI posts were available.');
+    await archivePosts(fetchedPosts);
+    await loadArchive();
     bluesky.lastRequestAt = Date.now();
     renderSources(selectedData());
     renderDataReview();
@@ -259,6 +323,12 @@ async function init() {
   renderBlueskyStatus();
   setActiveView(activeView);
   render();
+  try {
+    await loadArchive();
+  } catch (error) {
+    bluesky.error = `Could not load shared archive: ${error.message}`;
+    renderBlueskyStatus();
+  }
   loadBlueskySample();
   window.setInterval(loadBlueskySample, BLUESKY_REFRESH_MS);
   try {
