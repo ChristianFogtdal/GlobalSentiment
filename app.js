@@ -4,7 +4,9 @@ const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
-const bluesky = { posts: [], isLoading: false, error: '' };
+const REVIEW_PAGE_SIZE = 100;
+const bluesky = { posts: [], isLoading: false, error: '', totalCount: 0 };
+const reviewPage = { index: 0 };
 let activeView = 'dashboard';
 let map;
 let countryLayer;
@@ -44,12 +46,23 @@ async function requestArchive(path, options = {}) {
     },
   });
   if (!response.ok) throw new Error(`Archive returned ${response.status}`);
-  if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') return null;
-  return response.json();
+  if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') {
+    return { rows: [], totalCount: 0 };
+  }
+  const rows = await response.json();
+  const contentRange = response.headers.get('content-range'); // e.g. "0-99/1234"
+  const totalCount = contentRange && contentRange.includes('/') ? Number(contentRange.split('/')[1]) : rows.length;
+  return { rows, totalCount: Number.isFinite(totalCount) ? totalCount : rows.length };
 }
 async function loadArchive() {
-  const rows = await requestArchive('bluesky_posts?select=uri,author_handle,post_text,original_language,published_at,source_url&order=published_at.desc');
+  const from = reviewPage.index * REVIEW_PAGE_SIZE;
+  const to = from + REVIEW_PAGE_SIZE - 1;
+  const { rows, totalCount } = await requestArchive(
+    'bluesky_posts?select=uri,author_handle,post_text,original_language,published_at,source_url&order=published_at.desc',
+    { headers: { Prefer: 'count=exact', Range: `${from}-${to}` } }
+  );
   bluesky.posts = rows.map(postFromArchive);
+  bluesky.totalCount = totalCount;
   renderSources(selectedData());
   renderDataReview();
 }
@@ -123,16 +136,48 @@ function analysePost(text) {
 function renderDataReview() {
   const list = $('dataReviewList');
   const count = $('reviewCount');
+  const pagination = $('reviewPagination');
   if (!bluesky.posts.length) {
     list.innerHTML = `<tr><td colspan="10" class="empty">${bluesky.isLoading ? 'Loading the public Bluesky sample...' : 'No Bluesky sample has been loaded yet.'}</td></tr>`;
     count.textContent = 'Waiting for sample';
+    pagination.innerHTML = '';
     return;
   }
-  count.textContent = `${bluesky.posts.length} archived posts`;
+  const totalCount = bluesky.totalCount || bluesky.posts.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
+  const currentPage = reviewPage.index + 1;
+  const firstRow = reviewPage.index * REVIEW_PAGE_SIZE + 1;
+  const lastRow = firstRow + bluesky.posts.length - 1;
+  count.textContent = `${number.format(totalCount)} archived posts`;
   list.innerHTML = bluesky.posts.map((post) => {
     const analysis = analysePost(post.text);
     return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td>${escapeHtml(post.originalLanguage || 'Not supplied')}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${analysis.score}/100<br><span>${escapeHtml(analysis.sentiment)}</span></td><td>${escapeHtml(analysis.mood)}</td><td>${escapeHtml(analysis.emotion)}</td><td>${escapeHtml(analysis.topic)}</td><td class="rule-evidence">${escapeHtml(analysis.evidence)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
   }).join('');
+  pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${currentPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${currentPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${currentPage >= totalPages ? 'disabled' : ''}>Next</button>`;
+  const prevButton = $('reviewPrevPage');
+  const nextButton = $('reviewNextPage');
+  if (prevButton) prevButton.onclick = () => changeReviewPage(-1);
+  if (nextButton) nextButton.onclick = () => changeReviewPage(1);
+}
+
+async function changeReviewPage(delta) {
+  if (bluesky.isLoading) return;
+  const totalPages = Math.max(1, Math.ceil((bluesky.totalCount || bluesky.posts.length) / REVIEW_PAGE_SIZE));
+  const nextIndex = reviewPage.index + delta;
+  if (nextIndex < 0 || nextIndex >= totalPages) return;
+  reviewPage.index = nextIndex;
+  bluesky.isLoading = true;
+  renderBlueskyStatus();
+  renderDataReview();
+  try {
+    await loadArchive();
+  } catch (error) {
+    bluesky.error = `Could not load the shared archive: ${error.message}`;
+  } finally {
+    bluesky.isLoading = false;
+    renderBlueskyStatus();
+    renderDataReview();
+  }
 }
 
 function setActiveView(view) {
@@ -156,7 +201,7 @@ function renderBlueskyStatus() {
     status.textContent = 'Loading the shared historical archive';
   } else if (bluesky.posts.length) {
     button.textContent = 'Refresh archive';
-    status.textContent = bluesky.error || `${bluesky.posts.length} archived posts · dashboard refreshes every 5 minutes`;
+    status.textContent = bluesky.error || `${number.format(bluesky.totalCount || bluesky.posts.length)} archived posts · dashboard refreshes every 5 minutes`;
   } else if (bluesky.error) {
     button.textContent = 'Retry archive refresh';
     status.textContent = bluesky.error;
