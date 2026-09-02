@@ -15,6 +15,6 @@ Open `http://localhost:4173`.
 ## Data and dependencies
 
 - The dashboard uses the demo dataset in `demo-data.js`.
-- The dashboard fetches up to ten public, unauthenticated posts from the configured AI-focused Bluesky feed on load and then every five minutes while the page is open. The refresh control can request an additional sample; concurrent requests are prevented.
+- The dashboard fetches up to ten public, unauthenticated AI-related posts from three configured Bluesky accounts on load and then every five minutes while the page is open. This makes three small feed requests per refresh; posts must match an AI-related keyword before appearing. The refresh control can request an additional sample; concurrent requests are prevented.
 - Leaflet, map tiles, and country boundary data are loaded from public CDNs at runtime.
 - See `global-mood-intelligence-prd.md` for the product scope and responsible-AI constraints.

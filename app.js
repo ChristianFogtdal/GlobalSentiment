@@ -1,8 +1,9 @@
 const state = { time: '24h', emotion: 'all', topic: 'all', sort: 'impact' };
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
-const BLUESKY_AI_ACCOUNT = 'openaibot.bsky.social';
+const BLUESKY_AI_ACCOUNTS = ['openaibot.bsky.social', 'emollick.bsky.social', 'garymarcus.bsky.social'];
 const BLUESKY_POST_LIMIT = 10;
+const BLUESKY_POSTS_PER_ACCOUNT = 5;
 const BLUESKY_REFRESH_MS = 5 * 60 * 1000;
 const bluesky = { posts: [], isLoading: false, lastRequestAt: 0, error: '' };
 let activeView = 'dashboard';
@@ -20,6 +21,9 @@ function escapeHtml(value) {
 function matchesTerm(text, term) {
   const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\b${escapedTerm}\\b`, 'i').test(text);
+}
+function isAiRelated(text) {
+  return /\b(ai|artificial intelligence|llm|language model|chatgpt|gpt|claude|gemini|machine learning|deep learning|neural network|model|models)\b/i.test(text);
 }
 function selectedData() { return MoodData.getDashboardData(state); }
 
@@ -121,16 +125,16 @@ function renderBlueskyStatus() {
   button.disabled = bluesky.isLoading;
   if (bluesky.isLoading) {
     button.textContent = 'Loading Bluesky sample...';
-    status.textContent = `One public request · up to ${BLUESKY_POST_LIMIT} posts`;
+    status.textContent = `${BLUESKY_AI_ACCOUNTS.length} public requests · up to ${BLUESKY_POST_LIMIT} AI posts`;
   } else if (bluesky.posts.length) {
     button.textContent = 'Refresh Bluesky AI sample';
-    status.textContent = bluesky.error || `${bluesky.posts.length} public AI posts · refreshes every 5 minutes`;
+    status.textContent = bluesky.error || `${bluesky.posts.length} posts from ${new Set(bluesky.posts.map((post) => post.author)).size} AI sources · refreshes every 5 minutes`;
   } else if (bluesky.error) {
     button.textContent = 'Retry Bluesky AI sample';
     status.textContent = bluesky.error;
   } else {
     button.textContent = 'Refresh Bluesky AI sample';
-    status.textContent = `Auto-refreshes every 5 minutes · up to ${BLUESKY_POST_LIMIT} posts`;
+    status.textContent = `Auto-refreshes every 5 minutes · up to ${BLUESKY_POST_LIMIT} AI posts`;
   }
 }
 
@@ -141,13 +145,18 @@ async function loadBlueskySample() {
   renderBlueskyStatus();
   renderDataReview();
   try {
-    const parameters = new URLSearchParams({ actor: BLUESKY_AI_ACCOUNT, limit: String(BLUESKY_POST_LIMIT) });
-    const response = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?${parameters}`, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`Bluesky returned ${response.status}`);
-    const payload = await response.json();
-    bluesky.posts = (payload.feed || [])
+    const feeds = await Promise.all(BLUESKY_AI_ACCOUNTS.map(async (account) => {
+      const parameters = new URLSearchParams({ actor: account, limit: String(BLUESKY_POSTS_PER_ACCOUNT) });
+      const response = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?${parameters}`, { cache: 'no-store' });
+      if (!response.ok) throw new Error(`Bluesky returned ${response.status} for ${account}`);
+      const payload = await response.json();
+      return payload.feed || [];
+    }));
+    bluesky.posts = feeds.flat()
       .map((item) => item.post)
       .filter((post) => typeof post?.record?.text === 'string' && post.record.text.trim())
+      .filter((post) => isAiRelated(post.record.text))
+      .sort((first, second) => new Date(second.indexedAt) - new Date(first.indexedAt))
       .slice(0, BLUESKY_POST_LIMIT)
       .map((post) => {
         const rkey = post.uri.split('/').at(-1);
