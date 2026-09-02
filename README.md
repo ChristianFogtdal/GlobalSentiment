@@ -15,7 +15,35 @@ Open `http://localhost:4173`.
 ## Data and dependencies
 
 - The dashboard uses the demo dataset in `demo-data.js`.
-- The dashboard fetches up to ten public, unauthenticated AI-related posts from three configured Bluesky accounts on load and then every five minutes while the page is open. This makes three small feed requests per refresh; posts must match an AI-related keyword before appearing. The refresh control can request an additional sample; concurrent requests are prevented.
-- Retrieved posts are persisted to a shared Supabase Postgres archive. The Bluesky AT URI is the primary key, so repeat fetches do not add duplicate rows; Data review displays the full archived time series.
+- The dashboard reads the shared historical archive from Supabase Postgres; it does not call Bluesky directly. A scheduled Supabase Edge Function searches public Bluesky posts every 15 minutes for the configured AI-coding keywords and writes matching posts to the archive.
+- The Bluesky AT URI is the primary key, so repeat searches do not add duplicate rows. Data review displays the full archived time series.
+- New ingested posts retain Bluesky's declared original-language tag (such as `en`, `es`, or `pt-BR`). Translation is not performed.
 - Leaflet, map tiles, and country boundary data are loaded from public CDNs at runtime.
 - See `global-mood-intelligence-prd.md` for the product scope and responsible-AI constraints.
+
+## Scheduled Bluesky ingestion
+
+The `supabase/` directory contains the secure ingestion function and migration. The browser only reads the Supabase archive. The function searches these public-discussion keywords every 15 minutes: `copilot`, `cursor`, `claude code`, `windsurf`, `vibe coding`, and `ai coding`.
+
+Before deployment, configure `BLUESKY_HANDLE`, `BLUESKY_APP_PASSWORD`, and a long random `INGESTION_SECRET` as Supabase Edge Function secrets. Create a matching Vault secret and schedule the function only after the function is deployed:
+
+```sql
+select vault.create_secret('your-long-random-ingestion-secret', 'bluesky_ingestion_secret');
+
+select cron.schedule(
+  'ingest-bluesky-ai-coding-posts',
+  '*/15 * * * *',
+  $$
+  select net.http_post(
+    url := 'https://bsnzcspfrmlihwxqkjyv.supabase.co/functions/v1/ingest-bluesky-search',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer your-supabase-publishable-key',
+      'apikey', 'your-supabase-publishable-key',
+      'x-ingestion-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'bluesky_ingestion_secret')
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+```

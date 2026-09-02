@@ -1,13 +1,10 @@
 const state = { time: '24h', emotion: 'all', topic: 'all', sort: 'impact' };
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
-const BLUESKY_AI_ACCOUNTS = ['openaibot.bsky.social', 'emollick.bsky.social', 'garymarcus.bsky.social'];
-const BLUESKY_POST_LIMIT = 10;
-const BLUESKY_POSTS_PER_ACCOUNT = 5;
-const BLUESKY_REFRESH_MS = 5 * 60 * 1000;
+const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
-const bluesky = { posts: [], isLoading: false, lastRequestAt: 0, error: '' };
+const bluesky = { posts: [], isLoading: false, error: '' };
 let activeView = 'dashboard';
 let map;
 let countryLayer;
@@ -24,20 +21,6 @@ function matchesTerm(text, term) {
   const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`\\b${escapedTerm}\\b`, 'i').test(text);
 }
-function isAiRelated(text) {
-  const aiTerms = [
-    'ai', 'artificial intelligence', 'llm', 'language model', 'chatgpt', 'gpt', 'claude', 'gemini',
-    'copilot', 'cursor', 'perplexity', 'grok', 'mistral', 'llama', 'qwen', 'deepseek', 'fable',
-    'machine learning', 'deep learning', 'neural network', 'generative', 'genai', 'foundation model',
-    'model', 'models', 'ai agent', 'ai agents', 'autonomous agent', 'autonomous agents', 'agentic',
-    'prompt', 'prompting', 'prompt engineering', 'inference', 'fine-tuning', 'fine tuning',
-    'embedding', 'embeddings', 'rag', 'retrieval augmented', 'multimodal', 'text-to-image',
-    'text to image', 'image generation', 'video generation', 'synthetic media', 'coding assistant',
-  ];
-  const excludedPhrases = ['agent orange', 'talent agent', 'real estate agent', 'travel agent'];
-  const normalizedText = text.toLowerCase();
-  return !excludedPhrases.some((phrase) => normalizedText.includes(phrase)) && aiTerms.some((term) => matchesTerm(normalizedText, term));
-}
 function formatTimestamp(value) {
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
 }
@@ -46,6 +29,7 @@ function postFromArchive(row) {
     uri: row.uri,
     text: row.post_text,
     author: row.author_handle,
+    originalLanguage: row.original_language,
     timestamp: formatTimestamp(row.published_at),
     url: row.source_url,
   };
@@ -64,37 +48,10 @@ async function requestArchive(path, options = {}) {
   return response.json();
 }
 async function loadArchive() {
-  const rows = await requestArchive('bluesky_posts?select=uri,author_handle,post_text,published_at,source_url&order=published_at.desc');
+  const rows = await requestArchive('bluesky_posts?select=uri,author_handle,post_text,original_language,published_at,source_url&order=published_at.desc');
   bluesky.posts = rows.map(postFromArchive);
   renderSources(selectedData());
   renderDataReview();
-}
-async function archivePosts(posts) {
-  const rows = posts.map((post) => {
-    const analysis = analysePost(post.text);
-    return {
-      uri: post.uri,
-      author_handle: post.author,
-      post_text: post.text,
-      published_at: post.publishedAt,
-      source_url: post.url,
-      sentiment_score: analysis.score,
-      sentiment_label: analysis.sentiment,
-      mood: analysis.mood,
-      emotion: analysis.emotion,
-      topic: analysis.topic,
-      rule_evidence: analysis.evidence,
-    };
-  });
-  if (!rows.length) return;
-  await requestArchive('bluesky_posts?on_conflict=uri', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Prefer: 'resolution=ignore-duplicates,return=minimal',
-    },
-    body: JSON.stringify(rows),
-  });
 }
 function selectedData() { return MoodData.getDashboardData(state); }
 
@@ -167,14 +124,14 @@ function renderDataReview() {
   const list = $('dataReviewList');
   const count = $('reviewCount');
   if (!bluesky.posts.length) {
-    list.innerHTML = `<tr><td colspan="9" class="empty">${bluesky.isLoading ? 'Loading the public Bluesky sample...' : 'No Bluesky sample has been loaded yet.'}</td></tr>`;
+    list.innerHTML = `<tr><td colspan="10" class="empty">${bluesky.isLoading ? 'Loading the public Bluesky sample...' : 'No Bluesky sample has been loaded yet.'}</td></tr>`;
     count.textContent = 'Waiting for sample';
     return;
   }
   count.textContent = `${bluesky.posts.length} archived posts`;
   list.innerHTML = bluesky.posts.map((post) => {
     const analysis = analysePost(post.text);
-    return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${analysis.score}/100<br><span>${escapeHtml(analysis.sentiment)}</span></td><td>${escapeHtml(analysis.mood)}</td><td>${escapeHtml(analysis.emotion)}</td><td>${escapeHtml(analysis.topic)}</td><td class="rule-evidence">${escapeHtml(analysis.evidence)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
+    return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td>${escapeHtml(post.originalLanguage || 'Not supplied')}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${analysis.score}/100<br><span>${escapeHtml(analysis.sentiment)}</span></td><td>${escapeHtml(analysis.mood)}</td><td>${escapeHtml(analysis.emotion)}</td><td>${escapeHtml(analysis.topic)}</td><td class="rule-evidence">${escapeHtml(analysis.evidence)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
   }).join('');
 }
 
@@ -195,59 +152,30 @@ function renderBlueskyStatus() {
   const status = $('blueskyStatus');
   button.disabled = bluesky.isLoading;
   if (bluesky.isLoading) {
-    button.textContent = 'Loading Bluesky sample...';
-    status.textContent = `${BLUESKY_AI_ACCOUNTS.length} public requests · up to ${BLUESKY_POST_LIMIT} AI posts`;
+    button.textContent = 'Refreshing archive...';
+    status.textContent = 'Loading the shared historical archive';
   } else if (bluesky.posts.length) {
-    button.textContent = 'Refresh Bluesky AI sample';
-    status.textContent = bluesky.error || `${bluesky.posts.length} archived posts from ${new Set(bluesky.posts.map((post) => post.author)).size} AI sources · refreshes every 5 minutes`;
+    button.textContent = 'Refresh archive';
+    status.textContent = bluesky.error || `${bluesky.posts.length} archived posts · dashboard refreshes every 5 minutes`;
   } else if (bluesky.error) {
-    button.textContent = 'Retry Bluesky AI sample';
+    button.textContent = 'Retry archive refresh';
     status.textContent = bluesky.error;
   } else {
-    button.textContent = 'Refresh Bluesky AI sample';
-    status.textContent = `Auto-refreshes every 5 minutes · up to ${BLUESKY_POST_LIMIT} AI posts`;
+    button.textContent = 'Refresh archive';
+    status.textContent = 'Awaiting the scheduled ingestion job';
   }
 }
 
-async function loadBlueskySample() {
+async function refreshArchive() {
   if (bluesky.isLoading) return;
   bluesky.isLoading = true;
   bluesky.error = '';
   renderBlueskyStatus();
   renderDataReview();
   try {
-    const feeds = await Promise.all(BLUESKY_AI_ACCOUNTS.map(async (account) => {
-      const parameters = new URLSearchParams({ actor: account, limit: String(BLUESKY_POSTS_PER_ACCOUNT) });
-      const response = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?${parameters}`, { cache: 'no-store' });
-      if (!response.ok) throw new Error(`Bluesky returned ${response.status} for ${account}`);
-      const payload = await response.json();
-      return payload.feed || [];
-    }));
-    const fetchedPosts = feeds.flat()
-      .map((item) => item.post)
-      .filter((post) => typeof post?.record?.text === 'string' && post.record.text.trim())
-      .filter((post) => isAiRelated(post.record.text))
-      .sort((first, second) => new Date(second.indexedAt) - new Date(first.indexedAt))
-      .slice(0, BLUESKY_POST_LIMIT)
-      .map((post) => {
-        const rkey = post.uri.split('/').at(-1);
-        return {
-          uri: post.uri,
-          text: post.record.text.replace(/\s+/g, ' ').trim(),
-          author: post.author.handle,
-          publishedAt: post.record.createdAt || post.indexedAt,
-          timestamp: formatTimestamp(post.record.createdAt || post.indexedAt),
-          url: `https://bsky.app/profile/${post.author.handle}/post/${rkey}`,
-        };
-      });
-    if (!fetchedPosts.length) throw new Error('No public AI posts were available.');
-    await archivePosts(fetchedPosts);
     await loadArchive();
-    bluesky.lastRequestAt = Date.now();
-    renderSources(selectedData());
-    renderDataReview();
   } catch (error) {
-    bluesky.error = `Could not load Bluesky: ${error.message}`;
+    bluesky.error = `Could not load the shared archive: ${error.message}`;
   } finally {
     bluesky.isLoading = false;
     renderBlueskyStatus();
@@ -256,9 +184,7 @@ async function loadBlueskySample() {
 }
 
 function refreshWhenVisible() {
-  if (!document.hidden && Date.now() - bluesky.lastRequestAt >= BLUESKY_REFRESH_MS) {
-    loadBlueskySample();
-  }
+  if (!document.hidden) refreshArchive();
 }
 
 function renderMap(countries) {
@@ -321,7 +247,7 @@ function bindEvents() {
   $('emotionFilter').onchange = (event) => { state.emotion = event.target.value; render(); };
   $('topicFilter').onchange = (event) => { state.topic = event.target.value; render(); };
   $('sortTopics').onchange = (event) => { state.sort = event.target.value; render(); };
-  $('refreshBluesky').onclick = loadBlueskySample;
+  $('refreshBluesky').onclick = refreshArchive;
   document.addEventListener('visibilitychange', refreshWhenVisible);
   document.querySelectorAll('.view-tab').forEach((tab) => { tab.onclick = () => setActiveView(tab.dataset.view); });
   $('resetFilters').onclick = () => { state.time = '24h'; state.emotion = 'all'; state.topic = 'all'; ['timeFilter', 'emotionFilter', 'topicFilter'].forEach((id) => { $(id).value = state[id.replace('Filter', '')] || 'all'; }); render(); };
@@ -342,14 +268,8 @@ async function init() {
   renderBlueskyStatus();
   setActiveView(activeView);
   render();
-  try {
-    await loadArchive();
-  } catch (error) {
-    bluesky.error = `Could not load shared archive: ${error.message}`;
-    renderBlueskyStatus();
-  }
-  loadBlueskySample();
-  window.setInterval(loadBlueskySample, BLUESKY_REFRESH_MS);
+  refreshArchive();
+  window.setInterval(refreshArchive, ARCHIVE_REFRESH_MS);
   try {
     await loadCountryBoundaries();
   } catch (error) {

@@ -1,0 +1,4 @@
+project_id = "bsnzcspfrmlihwxqkjyv"
+
+[functions.ingest-bluesky-search]
+verify_jwt = false
