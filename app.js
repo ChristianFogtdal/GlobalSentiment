@@ -4,7 +4,7 @@ const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
-const bluesky = { posts: [], isLoading: false, error: '', totalCount: 0 };
+const bluesky = { posts: [], allPosts: [], isLoading: false, error: '', totalCount: 0 };
 const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
 let activeView = 'dashboard';
@@ -84,7 +84,7 @@ function parseArray(value) {
 function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } = {}) {
   const hours = { '1h': 1, '24h': 24, '7d': 24 * 7 }[time] || 24;
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
-  const recentPosts = bluesky.posts.filter((post) => {
+  const recentPosts = bluesky.allPosts.filter((post) => {
     const publishedAt = new Date(post.publishedAt || post.timestamp).getTime();
     return Number.isNaN(publishedAt) || publishedAt >= cutoff;
   });
@@ -186,7 +186,7 @@ async function loadArchive(page = reviewPage) {
       bluesky.posts = [];
     } else {
       // For each analysis, we need to fetch the post details from bluesky_posts
-      bluesky.posts = analyses.map(analysis => ({
+      const mappedPosts = analyses.map(analysis => ({
         // Post metadata from completed_post_analyses
         uri: analysis.post_uri,
         score: Math.round((analysis.score || 0) * 100),
@@ -211,6 +211,30 @@ async function loadArchive(page = reviewPage) {
         author: analysis.author_handle || 'unknown',
         originalLanguage: analysis.original_language || 'unknown',
       }));
+      bluesky.posts = mappedPosts;
+      if (page === 1) {
+        const allAnalyses = [];
+        const pageSize = 1000;
+        let offset = 0;
+        let archivePage;
+        do {
+          const result = await requestArchive(
+            `completed_post_analyses?order=created_at.desc&limit=${pageSize}&offset=${offset}`
+          );
+          archivePage = result.data;
+          if (Array.isArray(archivePage)) allAnalyses.push(...archivePage);
+          offset += archivePage?.length || 0;
+        } while (archivePage?.length === pageSize);
+        bluesky.allPosts = allAnalyses.map(analysis => ({
+          ...analysis,
+          score: Math.round((analysis.score || 0) * 100),
+          confidence: analysis.confidence || 0,
+          emotions: parseArray(analysis.emotions),
+          topics: parseArray(analysis.topics),
+          ai_stance: analysis.ai_tooling_stance || 'not_applicable',
+          publishedAt: analysis.published_at || analysis.created_at,
+        }));
+      }
       bluesky.error = '';
     }
   } catch (error) {
@@ -261,7 +285,7 @@ function renderTopics(topics) {
 function renderExplanation(data) {
   const focus = data.selectedTopic
     ? `${data.selectedTopic.name} is the active lens, with a sentiment score of ${data.selectedTopic.sentiment}.`
-    : bluesky.posts.length
+    : bluesky.allPosts.length
       ? 'The dashboard is aggregating the completed analyses currently available in the archive.'
       : 'Clean energy and international football are the strongest positive associations, while severe weather and cost-of-living discussion pull in the opposite direction.';
   const leadingEmotion = data.emotions[0]?.[0] || 'No dominant emotion';
@@ -361,8 +385,8 @@ function renderBlueskyStatus() {
   } else if (bluesky.error) {
     status.innerHTML = `⚠️ ${escapeHtml(bluesky.error)}`;
     status.className = 'error';
-  } else if (bluesky.posts.length > 0) {
-    status.innerHTML = `✓ ${bluesky.posts.length} posts with completed sentiment analysis`;
+  } else if (bluesky.totalCount > 0) {
+    status.innerHTML = `✓ ${number.format(bluesky.totalCount)} posts with completed sentiment analysis`;
     status.className = 'loaded';
   } else {
     status.innerHTML = '○ No completed analyses yet. The archive will populate when analysis completes.';
@@ -433,8 +457,8 @@ async function init() {
   // Load persisted sentiment analyses
   await loadArchive();
   const archiveData = selectedData();
-  const emotionOptions = [...new Set(bluesky.posts.flatMap((post) => parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label)).filter(Boolean))];
-  const topicOptions = [...new Set(bluesky.posts.flatMap((post) => parseArray(post.topics)).filter(Boolean))];
+  const emotionOptions = [...new Set(bluesky.allPosts.flatMap((post) => parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label)).filter(Boolean))];
+  const topicOptions = [...new Set(bluesky.allPosts.flatMap((post) => parseArray(post.topics)).filter(Boolean))];
   $('emotionFilter').innerHTML = '<option value="all">All emotions</option>' + emotionOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   renderDashboard(archiveData);
