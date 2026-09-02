@@ -15,5 +15,6 @@ Open `http://localhost:4173`.
 ## Data and dependencies
 
 - The dashboard uses the demo dataset in `demo-data.js`.
+- Select **Load Bluesky AI sample** to make one public, unauthenticated request for up to ten posts from the configured AI-focused Bluesky feed. It never auto-refreshes and enforces a five-minute cooldown between requests.
 - Leaflet, map tiles, and country boundary data are loaded from public CDNs at runtime.
 - See `global-mood-intelligence-prd.md` for the product scope and responsible-AI constraints.

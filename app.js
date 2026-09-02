@@ -1,12 +1,21 @@
 const state = { time: '24h', emotion: 'all', topic: 'all', sort: 'impact' };
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
+const BLUESKY_AI_ACCOUNT = 'openaibot.bsky.social';
+const BLUESKY_POST_LIMIT = 10;
+const BLUESKY_COOLDOWN_MS = 5 * 60 * 1000;
+const bluesky = { posts: [], isLoading: false, lastRequestAt: 0, error: '' };
 let map;
 let countryLayer;
 
 function sentimentLabel(score) { return score >= 75 ? 'Very positive' : score >= 60 ? 'Positive' : score >= 45 ? 'Mixed' : score >= 25 ? 'Negative' : 'Very negative'; }
 function scoreColor(score) { return score >= 70 ? '#118a72' : score >= 60 ? '#58a86d' : score >= 50 ? '#d3aa45' : '#cf6c53'; }
 function signed(value, suffix = '') { return `${value > 0 ? '+' : ''}${value}${suffix}`; }
+function escapeHtml(value) {
+  const element = document.createElement('span');
+  element.textContent = value;
+  return element.innerHTML;
+}
 function selectedData() { return MoodData.getDashboardData(state); }
 
 function renderTrend(trend) {
@@ -30,8 +39,63 @@ function renderShifts(data) {
   $('shiftList').innerHTML = `<button class="shift" data-topic="weather" type="button"><span class="shift-badge down">Major decrease</span><div><b>Weather concern accelerated</b><p>Started 13:00 UTC · score 71 to 56 in affected markets</p><span>Associated with severe weather mentions, up 186%</span></div><strong>-15</strong></button><button class="shift" data-topic="clean-energy" type="button"><span class="shift-badge up">Minor increase</span><div><b>Hope grew around clean energy</b><p>Started 08:00 UTC · score 58 to ${data.score}</p><span>Most visible in Canada and Germany</span></div><strong>+${data.change}</strong></button>`;
 }
 function renderSources(data) {
+  if (bluesky.posts.length) {
+    $('sourceList').innerHTML = bluesky.posts.slice(0, 3).map((post) => `<div class="source"><span>Bluesky AI sample</span><p>“${escapeHtml(post.text)}”</p><b>${escapeHtml(post.timestamp)}</b></div>`).join('');
+    return;
+  }
   const sources = data.topics.slice(0, 3).map((topic, index) => ({ source: ['Public forum', 'News comments', 'Video comments'][index], topic: topic.name, text: [`Discussion about ${topic.name.toLowerCase()} is gathering pace across multiple permitted public sources.`, `Representative, deduplicated discussion signal linked to ${topic.name.toLowerCase()}.`, `Aggregate signal reflects public reaction; individual authors are not profiled.`][index] }));
   $('sourceList').innerHTML = sources.map((item) => `<div class="source"><span>${item.source}</span><p>“${item.text}”</p><b>${item.topic}</b></div>`).join('');
+}
+
+function renderBlueskyStatus() {
+  const button = $('refreshBluesky');
+  const status = $('blueskyStatus');
+  button.disabled = bluesky.isLoading;
+  if (bluesky.isLoading) {
+    button.textContent = 'Loading Bluesky sample...';
+    status.textContent = `One public request · up to ${BLUESKY_POST_LIMIT} posts`;
+  } else if (bluesky.posts.length) {
+    button.textContent = 'Bluesky sample loaded';
+    status.textContent = bluesky.error || `${bluesky.posts.length} public AI posts · no auto-refresh`;
+  } else if (bluesky.error) {
+    button.textContent = 'Retry Bluesky AI sample';
+    status.textContent = bluesky.error;
+  } else {
+    button.textContent = 'Load Bluesky AI sample';
+    status.textContent = `Manual only · up to ${BLUESKY_POST_LIMIT} posts`;
+  }
+}
+
+async function loadBlueskySample() {
+  const elapsed = Date.now() - bluesky.lastRequestAt;
+  if (elapsed < BLUESKY_COOLDOWN_MS) {
+    const remainingMinutes = Math.ceil((BLUESKY_COOLDOWN_MS - elapsed) / 60_000);
+    bluesky.error = `Please wait ${remainingMinutes} minute${remainingMinutes === 1 ? '' : 's'} before trying again.`;
+    renderBlueskyStatus();
+    return;
+  }
+  bluesky.isLoading = true;
+  bluesky.error = '';
+  renderBlueskyStatus();
+  try {
+    const parameters = new URLSearchParams({ actor: BLUESKY_AI_ACCOUNT, limit: String(BLUESKY_POST_LIMIT) });
+    const response = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?${parameters}`, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Bluesky returned ${response.status}`);
+    const payload = await response.json();
+    bluesky.posts = (payload.feed || [])
+      .map((item) => item.post)
+      .filter((post) => typeof post?.record?.text === 'string' && post.record.text.trim())
+      .slice(0, BLUESKY_POST_LIMIT)
+      .map((post) => ({ text: post.record.text.trim(), timestamp: new Date(post.indexedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC' }));
+    if (!bluesky.posts.length) throw new Error('No public AI posts were available.');
+    bluesky.lastRequestAt = Date.now();
+    renderSources(selectedData());
+  } catch (error) {
+    bluesky.error = `Could not load Bluesky: ${error.message}`;
+  } finally {
+    bluesky.isLoading = false;
+    renderBlueskyStatus();
+  }
 }
 function renderMap(countries) {
   if (!countryLayer) return;
@@ -93,6 +157,7 @@ function bindEvents() {
   $('emotionFilter').onchange = (event) => { state.emotion = event.target.value; render(); };
   $('topicFilter').onchange = (event) => { state.topic = event.target.value; render(); };
   $('sortTopics').onchange = (event) => { state.sort = event.target.value; render(); };
+  $('refreshBluesky').onclick = loadBlueskySample;
   $('resetFilters').onclick = () => { state.time = '24h'; state.emotion = 'all'; state.topic = 'all'; ['timeFilter', 'emotionFilter', 'topicFilter'].forEach((id) => { $(id).value = state[id.replace('Filter', '')] || 'all'; }); render(); };
   document.addEventListener('click', (event) => { const trigger = event.target.closest('[data-topic], [data-emotion]'); if (!trigger) return; if (trigger.dataset.topic) { state.topic = trigger.dataset.topic; $('topicFilter').value = state.topic; } if (trigger.dataset.emotion) { state.emotion = trigger.dataset.emotion; $('emotionFilter').value = state.emotion; } render(); });
 }
@@ -108,6 +173,7 @@ async function init() {
   }).setView([24, 10], 1.35);
   L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 19 }).addTo(map);
   bindEvents();
+  renderBlueskyStatus();
   render();
   try {
     await loadCountryBoundaries();
