@@ -66,7 +66,8 @@
       <section class="data-review-view" id="dataReviewView" hidden>
         <div class="review-heading"><div><p class="eyebrow">Source verification</p><h1>Bluesky AI sentiment analysis</h1><p class="lede">LLM-generated sentiment analysis for Bluesky posts. Data is persisted server-side and refreshed periodically. Each analysis includes structured emotions, topics, and AI-tooling stance. Use the source link to verify the original post on Bluesky.</p></div><span id="reviewCount" class="source-count">Loading archive</span></div>
         <div class="panel review-panel">
-          <div class="topic-table-wrap"><table><thead><tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Sentiment (0-100)</th><th>Confidence</th><th>Emotions</th><th>Topics</th><th>AI stance</th><th>Rationale</th><th>Verification</th></tr></thead><tbody id="dataReviewList"></tbody></table></div>
+          <div class="review-table-wrap"><table><thead><tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Sentiment (0-100)</th><th>Confidence</th><th>Emotions</th><th>Topics</th><th>AI stance</th><th>Rationale</th><th>Verification</th></tr></thead><tbody id="dataReviewList"></tbody></table></div>
+          <div id="reviewPagination" class="review-pagination"></div>
         </div>
       </section>
     </main>

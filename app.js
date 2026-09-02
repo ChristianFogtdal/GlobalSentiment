@@ -4,7 +4,9 @@ const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
-const bluesky = { posts: [], isLoading: false, error: '' };
+const bluesky = { posts: [], isLoading: false, error: '', totalCount: 0 };
+const REVIEW_PAGE_SIZE = 100;
+let reviewPage = 1;
 let activeView = 'dashboard';
 let map;
 let countryLayer;
@@ -144,23 +146,41 @@ async function requestArchive(path, options = {}) {
     },
   });
   if (!response.ok) throw new Error(`Archive returned ${response.status}`);
-  if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') return null;
-  return response.json();
+  if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') {
+    return { data: null, totalCount: 0 };
+  }
+  const data = await response.json();
+  const contentRange = response.headers.get('content-range'); // e.g. "0-99/955"
+  const totalCount = contentRange ? Number(contentRange.split('/')[1]) : data.length;
+  return { data, totalCount };
 }
 /**
  * Load completed post analyses from Supabase
  * Queries completed_post_analyses view joined with bluesky_posts
  */
-async function loadArchive() {
+async function loadArchive(page = reviewPage) {
   try {
     bluesky.isLoading = true;
     renderBlueskyStatus();
-    
-    // Query completed_post_analyses view to get all completed analyses
-    const analyses = await requestArchive(
-      'completed_post_analyses?order=created_at.desc&limit=100'
+    renderDataReview();
+
+    reviewPage = page;
+    const from = (page - 1) * REVIEW_PAGE_SIZE;
+    const to = from + REVIEW_PAGE_SIZE - 1;
+
+    // Query completed_post_analyses view with exact count + range-based pagination
+    const { data: analyses, totalCount } = await requestArchive(
+      `completed_post_analyses?order=created_at.desc`,
+      {
+        headers: {
+          Prefer: 'count=exact',
+          Range: `${from}-${to}`,
+        },
+      }
     );
-    
+
+    bluesky.totalCount = totalCount;
+
     if (!analyses || analyses.length === 0) {
       bluesky.error = 'No completed analyses yet. Check back soon.';
       bluesky.posts = [];
@@ -262,26 +282,43 @@ function renderSources(data) {
 function renderDataReview() {
   const list = $('dataReviewList');
   const count = $('reviewCount');
-  
+  const pagination = $('reviewPagination');
+
   if (bluesky.isLoading) {
     list.innerHTML = `<tr><td colspan="11" class="empty">Loading persisted sentiment analysis from Supabase...</td></tr>`;
     count.textContent = 'Loading...';
+    if (pagination) pagination.innerHTML = '';
     return;
   }
   
   if (bluesky.error) {
     list.innerHTML = `<tr><td colspan="11" class="empty error"><strong>⚠️ ${escapeHtml(bluesky.error)}</strong><br><small>Check that: (1) Ingestion function has run, (2) LLM analysis is complete, (3) Supabase completed_post_analyses view exists</small></td></tr>`;
     count.textContent = 'Error';
+    if (pagination) pagination.innerHTML = '';
     return;
   }
   
   if (!bluesky.posts.length) {
     list.innerHTML = `<tr><td colspan="11" class="empty">No analyzed posts available yet. The archive will populate when analysis completes.</td></tr>`;
     count.textContent = 'No data';
+    if (pagination) pagination.innerHTML = '';
     return;
   }
   
-  count.textContent = `${bluesky.posts.length} analyzed posts`;
+  const totalCount = bluesky.totalCount || bluesky.posts.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
+  const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
+  const lastRow = firstRow + bluesky.posts.length - 1;
+
+  count.textContent = `${number.format(totalCount)} archived posts`;
+  if (pagination) {
+    pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
+    const prevButton = $('reviewPrevPage');
+    const nextButton = $('reviewNextPage');
+    if (prevButton) prevButton.addEventListener('click', () => loadArchive(reviewPage - 1));
+    if (nextButton) nextButton.addEventListener('click', () => loadArchive(reviewPage + 1));
+  }
+
   list.innerHTML = bluesky.posts.map((post) => `
     <tr>
       <td>${escapeHtml(post.timestamp)}</td>
@@ -368,7 +405,7 @@ document.getElementById('resetFilters')?.addEventListener('click', () => {
   renderDashboard(selectedData());
 });
 
-document.getElementById('refreshBluesky')?.addEventListener('click', loadArchive);
+document.getElementById('refreshBluesky')?.addEventListener('click', () => loadArchive(reviewPage));
 
 document.getElementById('emotionList')?.addEventListener('click', (event) => {
   const button = event.target.closest('.emotion-row');
@@ -402,8 +439,8 @@ async function init() {
   $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   renderDashboard(archiveData);
   
-  // Refresh archive periodically
-  setInterval(loadArchive, ARCHIVE_REFRESH_MS);
+  // Refresh archive periodically (reload current page)
+  setInterval(() => loadArchive(reviewPage), ARCHIVE_REFRESH_MS);
 }
 
 // Start application
