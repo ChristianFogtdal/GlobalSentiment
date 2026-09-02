@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
 const BLUESKY_AI_ACCOUNT = 'openaibot.bsky.social';
 const BLUESKY_POST_LIMIT = 10;
-const BLUESKY_COOLDOWN_MS = 5 * 60 * 1000;
+const BLUESKY_REFRESH_MS = 5 * 60 * 1000;
 const bluesky = { posts: [], isLoading: false, lastRequestAt: 0, error: '' };
 let map;
 let countryLayer;
@@ -55,25 +55,19 @@ function renderBlueskyStatus() {
     button.textContent = 'Loading Bluesky sample...';
     status.textContent = `One public request · up to ${BLUESKY_POST_LIMIT} posts`;
   } else if (bluesky.posts.length) {
-    button.textContent = 'Bluesky sample loaded';
-    status.textContent = bluesky.error || `${bluesky.posts.length} public AI posts · no auto-refresh`;
+    button.textContent = 'Refresh Bluesky AI sample';
+    status.textContent = bluesky.error || `${bluesky.posts.length} public AI posts · refreshes every 5 minutes`;
   } else if (bluesky.error) {
     button.textContent = 'Retry Bluesky AI sample';
     status.textContent = bluesky.error;
   } else {
-    button.textContent = 'Load Bluesky AI sample';
-    status.textContent = `Manual only · up to ${BLUESKY_POST_LIMIT} posts`;
+    button.textContent = 'Refresh Bluesky AI sample';
+    status.textContent = `Auto-refreshes every 5 minutes · up to ${BLUESKY_POST_LIMIT} posts`;
   }
 }
 
 async function loadBlueskySample() {
-  const elapsed = Date.now() - bluesky.lastRequestAt;
-  if (elapsed < BLUESKY_COOLDOWN_MS) {
-    const remainingMinutes = Math.ceil((BLUESKY_COOLDOWN_MS - elapsed) / 60_000);
-    bluesky.error = `Please wait ${remainingMinutes} minute${remainingMinutes === 1 ? '' : 's'} before trying again.`;
-    renderBlueskyStatus();
-    return;
-  }
+  if (bluesky.isLoading) return;
   bluesky.isLoading = true;
   bluesky.error = '';
   renderBlueskyStatus();
@@ -175,6 +169,8 @@ async function init() {
   bindEvents();
   renderBlueskyStatus();
   render();
+  loadBlueskySample();
+  window.setInterval(loadBlueskySample, BLUESKY_REFRESH_MS);
   try {
     await loadCountryBoundaries();
   } catch (error) {
