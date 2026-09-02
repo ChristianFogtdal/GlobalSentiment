@@ -17,6 +17,10 @@ function escapeHtml(value) {
   element.textContent = value;
   return element.innerHTML;
 }
+function matchesTerm(text, term) {
+  const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escapedTerm}\\b`, 'i').test(text);
+}
 function selectedData() { return MoodData.getDashboardData(state); }
 
 function renderTrend(trend) {
@@ -48,16 +52,55 @@ function renderSources(data) {
   $('sourceList').innerHTML = sources.map((item) => `<div class="source"><span>${item.source}</span><p>“${item.text}”</p><b>${item.topic}</b></div>`).join('');
 }
 
+function analysePost(text) {
+  const normalizedText = text.toLowerCase();
+  const sentimentRules = [
+    { terms: ['advance', 'advanced', 'improve', 'improved', 'safe', 'safeguard', 'accessible', 'benefit', 'progress'], score: 8, label: 'positive' },
+    { terms: ['risk', 'risks', 'harm', 'threat', 'outage', 'concern', 'failure', 'critical'], score: -10, label: 'negative' },
+  ];
+  const topicRules = [
+    { topic: 'AI safety', emotion: 'Caution', terms: ['safety', 'safe', 'safeguard', 'preparedness', 'risk', 'harm'] },
+    { topic: 'Model evaluation', emotion: 'Curiosity', terms: ['evaluated', 'evaluation', 'benchmark', 'capability', 'capabilities', 'model'] },
+    { topic: 'Cybersecurity', emotion: 'Concern', terms: ['cybersecurity', 'security', 'critical threshold'] },
+    { topic: 'AI releases', emotion: 'Excitement', terms: ['release', 'preview', 'launch', 'announcing'] },
+    { topic: 'AI research', emotion: 'Curiosity', terms: ['research', 'learn', 'learning', 'science'] },
+  ];
+  const matches = [];
+  let score = 50;
+  for (const rule of sentimentRules) {
+    const matchedTerms = rule.terms.filter((term) => matchesTerm(normalizedText, term));
+    if (matchedTerms.length) {
+      score += rule.score * matchedTerms.length;
+      matches.push(...matchedTerms.map((term) => `${rule.label}: ${term}`));
+    }
+  }
+  const matchedTopics = topicRules.map((rule) => ({ ...rule, matchedTerms: rule.terms.filter((term) => matchesTerm(normalizedText, term)) })).filter((rule) => rule.matchedTerms.length);
+  const leadingTopic = matchedTopics.sort((first, second) => second.matchedTerms.length - first.matchedTerms.length)[0];
+  if (leadingTopic) matches.push(...leadingTopic.matchedTerms.map((term) => `topic: ${term}`));
+  score = Math.max(0, Math.min(100, score));
+  return {
+    score,
+    sentiment: sentimentLabel(score),
+    mood: score >= 60 ? 'Upbeat' : score <= 40 ? 'Downbeat' : 'Mixed',
+    emotion: leadingTopic?.emotion || 'Neutral',
+    topic: leadingTopic?.topic || 'General AI',
+    evidence: matches.length ? matches.join('; ') : 'No configured rule matched',
+  };
+}
+
 function renderDataReview() {
   const list = $('dataReviewList');
   const count = $('reviewCount');
   if (!bluesky.posts.length) {
-    list.innerHTML = `<tr><td colspan="4" class="empty">${bluesky.isLoading ? 'Loading the public Bluesky sample...' : 'No Bluesky sample has been loaded yet.'}</td></tr>`;
+    list.innerHTML = `<tr><td colspan="9" class="empty">${bluesky.isLoading ? 'Loading the public Bluesky sample...' : 'No Bluesky sample has been loaded yet.'}</td></tr>`;
     count.textContent = 'Waiting for sample';
     return;
   }
   count.textContent = `${bluesky.posts.length} cleaned posts`;
-  list.innerHTML = bluesky.posts.map((post) => `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td class="post-text">${escapeHtml(post.text)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`).join('');
+  list.innerHTML = bluesky.posts.map((post) => {
+    const analysis = analysePost(post.text);
+    return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${analysis.score}/100<br><span>${escapeHtml(analysis.sentiment)}</span></td><td>${escapeHtml(analysis.mood)}</td><td>${escapeHtml(analysis.emotion)}</td><td>${escapeHtml(analysis.topic)}</td><td class="rule-evidence">${escapeHtml(analysis.evidence)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
+  }).join('');
 }
 
 function setActiveView(view) {
