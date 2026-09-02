@@ -4,13 +4,12 @@ const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
-const REVIEW_PAGE_SIZE = 100;
-const bluesky = { posts: [], isLoading: false, error: '', totalCount: 0 };
-const reviewPage = { index: 0 };
+const bluesky = { posts: [], isLoading: false, error: '' };
 let activeView = 'dashboard';
 let map;
 let countryLayer;
 
+// Utility functions
 function sentimentLabel(score) { return score >= 75 ? 'Very positive' : score >= 60 ? 'Positive' : score >= 45 ? 'Mixed' : score >= 25 ? 'Negative' : 'Very negative'; }
 function scoreColor(score) { return score >= 70 ? '#118a72' : score >= 60 ? '#58a86d' : score >= 50 ? '#d3aa45' : '#cf6c53'; }
 function signed(value, suffix = '') { return `${value > 0 ? '+' : ''}${value}${suffix}`; }
@@ -19,131 +18,290 @@ function escapeHtml(value) {
   element.textContent = value;
   return element.innerHTML;
 }
+function matchesTerm(text, term) {
+  const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escapedTerm}\\b`, 'i').test(text);
+}
 function formatTimestamp(value) {
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
 }
+
+/**
+ * Map persisted analysis data from Supabase to post object
+ * Converts score from 0-1 to 0-100 range
+ */
 function postFromArchive(row) {
+  const analysis = row.completed_post_analyses || {};
+  
+  // Convert numeric score (0-1) to 0-100 for dashboard
+  const scorePercent = analysis.score !== null && analysis.score !== undefined 
+    ? Math.round(analysis.score * 100) 
+    : 0;
+  
+  // Map sentiment enum to label for consistency
+  const sentimentLabel = {
+    'positive': 'Very positive',
+    'negative': 'Very negative',
+    'neutral': 'Mixed',
+    'mixed': 'Mixed',
+  }[analysis.sentiment] || 'Unknown';
+  
   return {
-    uri: row.post_uri,
+    uri: row.uri,
     text: row.post_text,
     author: row.author_handle,
     originalLanguage: row.original_language,
     timestamp: formatTimestamp(row.published_at),
+    publishedAt: row.published_at,
     url: row.source_url,
-    score: Math.round((row.score ?? 0) * 100),
-    sentiment: row.sentiment || 'unknown',
-    confidence: row.confidence ?? 0,
-    emotions: Array.isArray(row.emotions) ? row.emotions : (typeof row.emotions === 'string' ? JSON.parse(row.emotions) : []),
-    topics: Array.isArray(row.topics) ? row.topics : (typeof row.topics === 'string' ? JSON.parse(row.topics) : []),
-    aiStance: row.ai_tooling_stance || 'not_applicable',
-    rationale: row.rationale || '',
+    // Persisted LLM analysis fields
+    score: scorePercent,
+    sentiment: sentimentLabel,
+    emotions: analysis.emotions || [],
+    topics: analysis.topics || [],
+    ai_stance: analysis.ai_tooling_stance || 'unknown',
+    confidence: analysis.confidence || 0,
+    rationale: analysis.rationale || '',
+    model_version: analysis.model || 'unknown',
+    prompt_version: analysis.prompt_version || 'unknown',
   };
 }
+
+function parseArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.warn('Invalid archive array:', error);
+    return [];
+  }
+}
+
+function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } = {}) {
+  const hours = { '1h': 1, '24h': 24, '7d': 24 * 7 }[time] || 24;
+  const cutoff = Date.now() - hours * 60 * 60 * 1000;
+  const recentPosts = bluesky.posts.filter((post) => {
+    const publishedAt = new Date(post.publishedAt || post.timestamp).getTime();
+    return Number.isNaN(publishedAt) || publishedAt >= cutoff;
+  });
+
+  const filteredPosts = recentPosts.filter((post) => {
+    const postTopics = parseArray(post.topics);
+    const postEmotions = parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label);
+    return (emotion === 'all' || postEmotions.includes(emotion))
+      && (topic === 'all' || postTopics.includes(topic));
+  });
+  const posts = filteredPosts;
+  const average = (values) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
+  const score = average(posts.map((post) => post.score));
+  const confidence = average(posts.map((post) => post.confidence * 100));
+  const emotionCounts = new Map();
+  posts.forEach((post) => parseArray(post.emotions).forEach((item) => {
+    const name = typeof item === 'string' ? item : item.label;
+    if (name) emotionCounts.set(name, (emotionCounts.get(name) || 0) + 1);
+  }));
+  const totalEmotions = [...emotionCounts.values()].reduce((sum, value) => sum + value, 0) || 1;
+  const emotions = [...emotionCounts.entries()]
+    .map(([name, count]) => [name, Math.round(count / totalEmotions * 100), 0])
+    .sort((first, second) => second[1] - first[1]);
+  const topicMap = new Map();
+  posts.forEach((post) => parseArray(post.topics).forEach((name) => {
+    const entry = topicMap.get(name) || { scores: [], volume: 0 };
+    entry.scores.push(post.score);
+    entry.volume += 1;
+    topicMap.set(name, entry);
+  }));
+  const topics = [...topicMap.entries()].map(([name, entry]) => {
+    const sentiment = average(entry.scores);
+    return { id: name, name, volume: entry.volume, sentiment, emotion: '', impact: Number((sentiment - score).toFixed(1)) };
+  }).sort((first, second) => second.volume - first.volume);
+  const stanceCounts = new Map();
+  posts.forEach((post) => stanceCounts.set(post.ai_stance, (stanceCounts.get(post.ai_stance) || 0) + 1));
+  const stance = [...stanceCounts.entries()].sort((first, second) => second[1] - first[1])[0];
+  const selectedTopic = topics.find((item) => item.id === topic);
+  return {
+    score,
+    items: posts.length,
+    confidence: confidence ? `${confidence}%` : 'N/A',
+    emotions,
+    topics,
+    selectedTopic,
+    selectedEmotion: emotions.find(([name]) => name === emotion),
+    stance: stance ? `${stance[0]} (${stance[1]})` : 'N/A',
+    stanceCount: stance ? stance[1] : 0,
+    posts,
+  };
+}
+
 async function requestArchive(path, options = {}) {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
       apikey: SUPABASE_PUBLISHABLE_KEY,
-      Authorization: `Bearer ${SUPABASE_PUBLISHABLE_KEY}`,
       ...options.headers,
     },
   });
   if (!response.ok) throw new Error(`Archive returned ${response.status}`);
-  if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') {
-    return { rows: [], totalCount: 0 };
-  }
-  const rows = await response.json();
-  const contentRange = response.headers.get('content-range'); // e.g. "0-99/1234"
-  const totalCount = contentRange && contentRange.includes('/') ? Number(contentRange.split('/')[1]) : rows.length;
-  return { rows, totalCount: Number.isFinite(totalCount) ? totalCount : rows.length };
+  if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') return null;
+  return response.json();
 }
+/**
+ * Load completed post analyses from Supabase
+ * Queries completed_post_analyses view joined with bluesky_posts
+ */
 async function loadArchive() {
-  const from = reviewPage.index * REVIEW_PAGE_SIZE;
-  const to = from + REVIEW_PAGE_SIZE - 1;
-  const { rows, totalCount } = await requestArchive(
-    'completed_post_analyses?select=post_uri,post_text,author_handle,original_language,published_at,source_url,sentiment,score,confidence,emotions,topics,ai_tooling_stance,rationale&order=published_at.desc',
-    { headers: { Prefer: 'count=exact', Range: `${from}-${to}` } }
-  );
-  bluesky.posts = rows.map(postFromArchive);
-  bluesky.totalCount = totalCount;
-  renderSources(selectedData());
-  renderDataReview();
+  try {
+    bluesky.isLoading = true;
+    renderBlueskyStatus();
+    
+    // Query completed_post_analyses view to get all completed analyses
+    const analyses = await requestArchive(
+      'completed_post_analyses?order=created_at.desc&limit=100'
+    );
+    
+    if (!analyses || analyses.length === 0) {
+      bluesky.error = 'No completed analyses yet. Check back soon.';
+      bluesky.posts = [];
+    } else {
+      // For each analysis, we need to fetch the post details from bluesky_posts
+      bluesky.posts = analyses.map(analysis => ({
+        // Post metadata from completed_post_analyses
+        uri: analysis.post_uri,
+        score: Math.round((analysis.score || 0) * 100),
+        sentiment: {
+          'positive': 'Very positive',
+          'negative': 'Very negative', 
+          'neutral': 'Mixed',
+          'mixed': 'Mixed',
+        }[analysis.sentiment] || 'Unknown',
+        confidence: (analysis.confidence || 0), // Keep as 0-1, renderDataReview will format
+        emotions: parseArray(analysis.emotions),
+        topics: parseArray(analysis.topics),
+        ai_stance: analysis.ai_tooling_stance || 'not_applicable',
+        rationale: analysis.rationale || '',
+        model: analysis.model || 'unknown',
+        timestamp: formatTimestamp(analysis.created_at),
+        publishedAt: analysis.published_at || analysis.created_at,
+        url: analysis.source_url,
+        
+        // Post details from bluesky_posts (via JOIN in completed_post_analyses view)
+        text: analysis.post_text || '(post text unavailable)',
+        author: analysis.author_handle || 'unknown',
+        originalLanguage: analysis.original_language || 'unknown',
+      }));
+      bluesky.error = '';
+    }
+  } catch (error) {
+    bluesky.error = `Failed to load archive: ${error.message}`;
+    console.error('Archive load error:', error);
+  } finally {
+    bluesky.isLoading = false;
+    renderBlueskyStatus();
+    renderDashboard(selectedData());
+    renderDataReview();
+  }
 }
-function selectedData() { return MoodData.getDashboardData(state); }
 
-function renderTrend(trend) {
-  const points = trend.map((value, index) => `${index * (350 / (trend.length - 1))},${65 - (value - 45) * 2.5}`).join(' ');
-  $('trendChart').innerHTML = `<polyline points="${points}" fill="none" stroke="#2c7f7b" stroke-width="3" vector-effect="non-scaling-stroke"/><circle cx="350" cy="${65 - (trend.at(-1) - 45) * 2.5}" r="4" fill="#ec7657"/>`;
+function selectedData() {
+  return archiveDashboardData(state);
 }
+
+function renderDashboardMetrics(data) {
+  $('moodScore').textContent = data.score;
+  $('moodLabel').textContent = sentimentLabel(data.score);
+  $('stanceSummary').textContent = data.stance;
+  $('stanceNote').textContent = 'Most common classification (count)';
+  $('sampleSize').textContent = number.format(data.items);
+  $('sourceNote').textContent = 'Completed Bluesky analyses';
+  $('confidence').textContent = data.confidence;
+}
+
+function renderDashboard(data) {
+  renderDashboardMetrics(data);
+  renderEmotions(data.emotions);
+  renderTopics(data.topics);
+  renderExplanation(data);
+  renderSources(data);
+}
+
 function renderEmotions(emotions) {
-  $('dominantEmotion').textContent = `Dominant: ${emotions[0][0]}`;
-  $('emotionList').innerHTML = emotions.map(([name, share, change]) => `<button class="emotion-row ${state.emotion === name ? 'selected' : ''}" data-emotion="${name}" type="button"><span>${name}</span><div class="bar"><i style="width:${share}%"></i></div><strong>${share}%</strong><small class="${change >= 0 ? 'up' : 'down'}">${signed(change, ' pts')}</small></button>`).join('');
+  $('dominantEmotion').textContent = `Dominant: ${emotions[0]?.[0] || 'N/A'}`;
+  $('emotionList').innerHTML = emotions.length
+    ? emotions.map(([name, share]) => `<button class="emotion-row ${state.emotion === name ? 'selected' : ''}" data-emotion="${name}" type="button"><span>${escapeHtml(name)}</span><div class="bar"><i style="width:${share}%"></i></div><strong>${share}%</strong></button>`).join('')
+    : '<p class="empty">No emotion data for the selected analyses.</p>';
 }
+
 function renderTopics(topics) {
-  const sorted = [...topics].sort((first, second) => state.sort === 'volume' ? second.volume - first.volume : state.sort === 'growth' ? second.growth - first.growth : Math.abs(second.impact) - Math.abs(first.impact));
-  $('topicList').innerHTML = sorted.length ? sorted.map((topic) => `<tr class="topic-row ${state.topic === topic.id ? 'selected' : ''}" data-topic="${topic.id}"><td><b>${topic.name}</b><span>${topic.emotion} · ${topic.growth > 0 ? '+' : ''}${topic.growth}%</span></td><td>${number.format(topic.volume)}</td><td><span class="score-dot" style="background:${scoreColor(topic.sentiment)}"></span>${topic.sentiment}</td><td class="${topic.impact >= 0 ? 'impact-positive' : 'impact-negative'}">${signed(topic.impact, ' pts')}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No demo topics match this filter.</td></tr>';
+  const sorted = [...topics].sort((first, second) => state.sort === 'volume' ? second.volume - first.volume : Math.abs(second.impact) - Math.abs(first.impact));
+  $('topicList').innerHTML = sorted.length ? sorted.map((topic) => `<tr class="topic-row ${state.topic === topic.id ? 'selected' : ''}" data-topic="${topic.id}"><td><b>${escapeHtml(topic.name)}</b><span>Analyzed posts</span></td><td>${number.format(topic.volume)}</td><td><span class="score-dot" style="background:${scoreColor(topic.sentiment)}"></span>${topic.sentiment}</td><td class="${topic.impact >= 0 ? 'impact-positive' : 'impact-negative'}">${signed(topic.impact, ' pts')}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No topics match this filter.</td></tr>';
 }
+
 function renderExplanation(data) {
-  const focus = data.selectedTopic ? `${data.selectedTopic.name} is the active lens, with a sentiment score of ${data.selectedTopic.sentiment}.` : 'Clean energy and international football are the strongest positive associations, while severe weather and cost-of-living discussion pull in the opposite direction.';
-  $('explanation').textContent = `Public mood is ${sentimentLabel(data.score).toLowerCase()} at ${data.score}/100, ${data.change >= 0 ? 'up' : 'down'} ${Math.abs(data.change)} points from the equivalent prior period. ${focus} Hope is the leading emotion, while anxiety has increased alongside weather-related conversation. The strongest change is visible in Germany and the United Kingdom.`;
-  $('evidence').innerHTML = data.topics.slice(0, 3).map((topic) => `<button data-topic="${topic.id}" type="button"><b>${topic.name}</b><span>${signed(topic.impact, ' pts')} mood impact</span></button>`).join('');
+  const focus = data.selectedTopic
+    ? `${data.selectedTopic.name} is the active lens, with a sentiment score of ${data.selectedTopic.sentiment}.`
+    : bluesky.posts.length
+      ? 'The dashboard is aggregating the completed analyses currently available in the archive.'
+      : 'Clean energy and international football are the strongest positive associations, while severe weather and cost-of-living discussion pull in the opposite direction.';
+  const leadingEmotion = data.emotions[0]?.[0] || 'No dominant emotion';
+  $('explanation').textContent = data.items
+    ? `Public mood is ${sentimentLabel(data.score).toLowerCase()} at ${data.score}/100, based on ${number.format(data.items)} analyzed posts. ${focus} ${leadingEmotion} is the leading emotion in the selected data.`
+    : 'No completed analyses match the selected filters. Widen the time window or reset the filters to see a data-backed summary.';
+  $('evidence').innerHTML = data.topics.slice(0, 3).map((topic) => `<button data-topic="${topic.id}" type="button"><b>${escapeHtml(topic.name)}</b><span>${signed(topic.impact, ' pts')} vs overall score</span></button>`).join('');
 }
-function renderShifts(data) {
-  $('shiftList').innerHTML = `<button class="shift" data-topic="weather" type="button"><span class="shift-badge down">Major decrease</span><div><b>Weather concern accelerated</b><p>Started 13:00 UTC · score 71 to 56 in affected markets</p><span>Associated with severe weather mentions, up 186%</span></div><strong>-15</strong></button><button class="shift" data-topic="clean-energy" type="button"><span class="shift-badge up">Minor increase</span><div><b>Hope grew around clean energy</b><p>Started 08:00 UTC · score 58 to ${data.score}</p><span>Most visible in Canada and Germany</span></div><strong>+${data.change}</strong></button>`;
-}
+
 function renderSources(data) {
-  if (bluesky.posts.length) {
-    $('sourceList').innerHTML = bluesky.posts.slice(0, 3).map((post) => `<div class="source"><span>Bluesky AI sample</span><p>“${escapeHtml(post.text)}”</p><b>${escapeHtml(post.timestamp)}</b></div>`).join('');
+  if (data.posts.length) {
+    $('sourceList').innerHTML = data.posts.slice(0, 3).map((post) => `<div class="source"><span>Bluesky AI sample</span><p>"${escapeHtml(post.text)}"</p><b>${escapeHtml(post.timestamp)}</b></div>`).join('');
     return;
   }
-  const sources = data.topics.slice(0, 3).map((topic, index) => ({ source: ['Public forum', 'News comments', 'Video comments'][index], topic: topic.name, text: [`Discussion about ${topic.name.toLowerCase()} is gathering pace across multiple permitted public sources.`, `Representative, deduplicated discussion signal linked to ${topic.name.toLowerCase()}.`, `Aggregate signal reflects public reaction; individual authors are not profiled.`][index] }));
-  $('sourceList').innerHTML = sources.map((item) => `<div class="source"><span>${item.source}</span><p>“${item.text}”</p><b>${item.topic}</b></div>`).join('');
+  $('sourceList').innerHTML = '<div class="source"><span>Archive</span><p>No completed analyses match the selected filters.</p><b>Try a wider time window or reset filters</b></div>';
 }
 
 function renderDataReview() {
   const list = $('dataReviewList');
   const count = $('reviewCount');
-  const pagination = $('reviewPagination');
-  if (!bluesky.posts.length) {
-    list.innerHTML = `<tr><td colspan="10" class="empty">${bluesky.isLoading ? 'Loading persisted sentiment analysis...' : 'No analyzed posts available yet. Ingestion & analysis runs on a schedule.'}</td></tr>`;
-    count.textContent = 'Waiting for analysis';
-    pagination.innerHTML = '';
+  
+  if (bluesky.isLoading) {
+    list.innerHTML = `<tr><td colspan="11" class="empty">Loading persisted sentiment analysis from Supabase...</td></tr>`;
+    count.textContent = 'Loading...';
     return;
   }
-  const totalCount = bluesky.totalCount || bluesky.posts.length;
-  const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
-  const currentPage = reviewPage.index + 1;
-  const firstRow = reviewPage.index * REVIEW_PAGE_SIZE + 1;
-  const lastRow = firstRow + bluesky.posts.length - 1;
-  count.textContent = `${number.format(totalCount)} archived posts`;
-  list.innerHTML = bluesky.posts.map((post) => {
-    return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td>${escapeHtml(post.originalLanguage || 'Not supplied')}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${post.score}/100<br><span>${escapeHtml(sentimentLabel(post.score))}</span></td><td>${(post.confidence * 100).toFixed(0)}%</td><td title="${post.emotions.map((emotion) => `${emotion.label} (${(emotion.confidence * 100).toFixed(0)}%)`).join(', ')}">${post.emotions.length ? escapeHtml(post.emotions.slice(0, 2).map((emotion) => emotion.label).join(', ')) : 'N/A'}</td><td>${post.topics.length ? escapeHtml(post.topics.join(', ')) : 'N/A'}</td><td class="rule-evidence" title="${escapeHtml(post.rationale)}">${escapeHtml(post.rationale.slice(0, 60))}${post.rationale.length > 60 ? '…' : ''}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
-  }).join('');
-  pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${currentPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${currentPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${currentPage >= totalPages ? 'disabled' : ''}>Next</button>`;
-  const prevButton = $('reviewPrevPage');
-  const nextButton = $('reviewNextPage');
-  if (prevButton) prevButton.onclick = () => changeReviewPage(-1);
-  if (nextButton) nextButton.onclick = () => changeReviewPage(1);
-}
-
-async function changeReviewPage(delta) {
-  if (bluesky.isLoading) return;
-  const totalPages = Math.max(1, Math.ceil((bluesky.totalCount || bluesky.posts.length) / REVIEW_PAGE_SIZE));
-  const nextIndex = reviewPage.index + delta;
-  if (nextIndex < 0 || nextIndex >= totalPages) return;
-  reviewPage.index = nextIndex;
-  bluesky.isLoading = true;
-  renderBlueskyStatus();
-  renderDataReview();
-  try {
-    await loadArchive();
-  } catch (error) {
-    bluesky.error = `Could not load the shared archive: ${error.message}`;
-  } finally {
-    bluesky.isLoading = false;
-    renderBlueskyStatus();
-    renderDataReview();
+  
+  if (bluesky.error) {
+    list.innerHTML = `<tr><td colspan="11" class="empty error"><strong>⚠️ ${escapeHtml(bluesky.error)}</strong><br><small>Check that: (1) Ingestion function has run, (2) LLM analysis is complete, (3) Supabase completed_post_analyses view exists</small></td></tr>`;
+    count.textContent = 'Error';
+    return;
   }
+  
+  if (!bluesky.posts.length) {
+    list.innerHTML = `<tr><td colspan="11" class="empty">No analyzed posts available yet. The archive will populate when analysis completes.</td></tr>`;
+    count.textContent = 'No data';
+    return;
+  }
+  
+  count.textContent = `${bluesky.posts.length} analyzed posts`;
+  list.innerHTML = bluesky.posts.map((post) => `
+    <tr>
+      <td>${escapeHtml(post.timestamp)}</td>
+      <td>@${escapeHtml(post.author)}</td>
+      <td>${escapeHtml(post.originalLanguage || 'Unknown')}</td>
+      <td class="post-text">${escapeHtml(post.text)}</td>
+      <td>
+        <span class="sentiment-score" style="background: ${scoreColor(post.score)}">${post.score}%</span>
+        <br><small>${escapeHtml(post.sentiment)}</small>
+      </td>
+      <td><small>${(post.confidence * 100).toFixed(0)}%</small></td>
+      <td title="${post.emotions.map(e => `${e.label} (${(e.confidence * 100).toFixed(0)}%)`).join(', ')}">
+        ${post.emotions.length > 0 ? post.emotions.slice(0, 2).map(e => escapeHtml(e.label)).join(', ') : 'N/A'}
+      </td>
+      <td>${post.topics.length > 0 ? escapeHtml(post.topics.join(', ')) : 'N/A'}</td>
+      <td>${escapeHtml(post.ai_stance)}</td>
+      <td class="rationale" title="${escapeHtml(post.rationale)}"><small>${escapeHtml(post.rationale.substring(0, 40))}${post.rationale.length > 40 ? '...' : ''}</small></td>
+      <td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
+    </tr>
+  `).join('');
 }
 
 function setActiveView(view) {
@@ -159,134 +317,94 @@ function setActiveView(view) {
 }
 
 function renderBlueskyStatus() {
-  const button = $('refreshBluesky');
   const status = $('blueskyStatus');
-  button.disabled = bluesky.isLoading;
   if (bluesky.isLoading) {
-    button.textContent = 'Refreshing archive...';
-    status.textContent = 'Loading the shared historical archive';
-  } else if (bluesky.posts.length) {
-    button.textContent = 'Refresh archive';
-    status.textContent = bluesky.error || `${number.format(bluesky.totalCount || bluesky.posts.length)} archived posts · dashboard refreshes every 5 minutes`;
+    status.innerHTML = '⏳ Loading persisted sentiment analysis...';
+    status.className = 'loading';
   } else if (bluesky.error) {
-    button.textContent = 'Retry archive refresh';
-    status.textContent = bluesky.error;
+    status.innerHTML = `⚠️ ${escapeHtml(bluesky.error)}`;
+    status.className = 'error';
+  } else if (bluesky.posts.length > 0) {
+    status.innerHTML = `✓ ${bluesky.posts.length} posts with completed sentiment analysis`;
+    status.className = 'loaded';
   } else {
-    button.textContent = 'Refresh archive';
-    status.textContent = 'Awaiting the scheduled ingestion job';
+    status.innerHTML = '○ No completed analyses yet. The archive will populate when analysis completes.';
+    status.className = 'empty';
   }
 }
 
-async function refreshArchive() {
-  if (bluesky.isLoading) return;
-  bluesky.isLoading = true;
-  bluesky.error = '';
-  renderBlueskyStatus();
-  renderDataReview();
-  try {
-    await loadArchive();
-  } catch (error) {
-    bluesky.error = `Could not load the shared archive: ${error.message}`;
-  } finally {
-    bluesky.isLoading = false;
-    renderBlueskyStatus();
-    renderDataReview();
+// Event listeners
+document.querySelectorAll('.view-tab').forEach((tab) => {
+  tab.addEventListener('click', () => setActiveView(tab.dataset.view));
+});
+
+document.getElementById('timeFilter')?.addEventListener('change', (event) => {
+  state.time = event.target.value;
+  renderDashboard(selectedData());
+});
+
+document.getElementById('emotionFilter')?.addEventListener('change', (event) => {
+  state.emotion = event.target.value;
+  renderDashboard(selectedData());
+});
+
+document.getElementById('topicFilter')?.addEventListener('change', (event) => {
+  state.topic = event.target.value;
+  renderDashboard(selectedData());
+});
+
+document.getElementById('sortTopics')?.addEventListener('change', (event) => {
+  state.sort = event.target.value;
+  renderTopics(selectedData().topics);
+});
+
+document.getElementById('resetFilters')?.addEventListener('click', () => {
+  state.time = '24h';
+  state.emotion = 'all';
+  state.topic = 'all';
+  $('timeFilter').value = state.time;
+  $('emotionFilter').value = state.emotion;
+  $('topicFilter').value = state.topic;
+  renderDashboard(selectedData());
+});
+
+document.getElementById('refreshBluesky')?.addEventListener('click', loadArchive);
+
+document.getElementById('emotionList')?.addEventListener('click', (event) => {
+  const button = event.target.closest('.emotion-row');
+  if (button) {
+    state.emotion = state.emotion === button.dataset.emotion ? 'all' : button.dataset.emotion;
+    $('emotionFilter').value = state.emotion;
+    renderDashboard(selectedData());
   }
-}
+});
 
-function refreshWhenVisible() {
-  if (!document.hidden) refreshArchive();
-}
+document.getElementById('topicList')?.addEventListener('click', (event) => {
+  const row = event.target.closest('.topic-row');
+  if (row) {
+    state.topic = state.topic === row.dataset.topic ? 'all' : row.dataset.topic;
+    $('topicFilter').value = state.topic;
+    renderDashboard(selectedData());
+  }
+});
 
-function renderMap(countries) {
-  if (!countryLayer) return;
-  const countriesByBoundaryId = new Map(countries.map((country) => [country.boundaryId, country]));
-  countryLayer.eachLayer((layer) => {
-    const country = countriesByBoundaryId.get(layer.feature.id);
-    layer.setStyle(country ? {
-      color: '#fffdf8',
-      fillColor: scoreColor(country.score),
-      fillOpacity: 0.78,
-      opacity: 0.85,
-      weight: 1.25,
-    } : {
-      color: '#cbd5d0',
-      fillColor: '#dfe7e2',
-      fillOpacity: 0.28,
-      opacity: 0.55,
-      weight: 0.5,
-    });
-    if (country) {
-      layer.bindPopup(`<div class="popup"><b>${country.name}</b><strong>${country.score}/100 ${sentimentLabel(country.score)}</strong><span>${signed(country.change, ' pts')} · ${number.format(country.items)} items · ${country.confidence} confidence</span><p>${country.emotion}: ${country.topics.join(', ')}</p></div>`);
-    } else {
-      layer.unbindPopup();
-    }
-  });
-}
-
-async function loadCountryBoundaries() {
-  const response = await fetch('https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json');
-  if (!response.ok) throw new Error(`Unable to load world boundaries: ${response.status}`);
-  const boundaries = await response.json();
-  countryLayer = L.geoJSON(boundaries, {
-    style: {
-      color: '#cbd5d0',
-      fillColor: '#dfe7e2',
-      fillOpacity: 0.28,
-      opacity: 0.55,
-      weight: 0.5,
-    },
-  }).addTo(map);
-  renderMap(selectedData().countries);
-}
-function render() {
-  const data = selectedData();
-  $('moodScore').textContent = data.score;
-  $('moodLabel').textContent = sentimentLabel(data.score);
-  $('movement').textContent = signed(data.change, ' pts');
-  $('movement').className = data.change >= 0 ? 'positive' : 'negative';
-  $('movementNote').textContent = 'vs previous equivalent period';
-  $('sampleSize').textContent = number.format(data.items);
-  $('sourceNote').textContent = '3 permitted public sources';
-  $('confidence').textContent = data.confidence;
-  $('trendRange').textContent = state.time === '1h' ? 'Last 60 minutes' : state.time === '7d' ? 'Last 7 days' : 'Last 24 hours';
-  $('updatedAt').textContent = 'Updated 14:30 UTC';
-  renderTrend(data.trend); renderEmotions(data.emotions); renderTopics(data.topics); renderExplanation(data); renderShifts(data); renderSources(data); renderMap(data.countries);
-}
-function bindEvents() {
-  $('timeFilter').onchange = (event) => { state.time = event.target.value; render(); };
-  $('emotionFilter').onchange = (event) => { state.emotion = event.target.value; render(); };
-  $('topicFilter').onchange = (event) => { state.topic = event.target.value; render(); };
-  $('sortTopics').onchange = (event) => { state.sort = event.target.value; render(); };
-  $('refreshBluesky').onclick = refreshArchive;
-  document.addEventListener('visibilitychange', refreshWhenVisible);
-  document.querySelectorAll('.view-tab').forEach((tab) => { tab.onclick = () => setActiveView(tab.dataset.view); });
-  $('resetFilters').onclick = () => { state.time = '24h'; state.emotion = 'all'; state.topic = 'all'; ['timeFilter', 'emotionFilter', 'topicFilter'].forEach((id) => { $(id).value = state[id.replace('Filter', '')] || 'all'; }); render(); };
-  document.addEventListener('click', (event) => { const trigger = event.target.closest('[data-topic], [data-emotion]'); if (!trigger) return; if (trigger.dataset.topic) { state.topic = trigger.dataset.topic; $('topicFilter').value = state.topic; } if (trigger.dataset.emotion) { state.emotion = trigger.dataset.emotion; $('emotionFilter').value = state.emotion; } render(); });
-}
+// Initial load
 async function init() {
-  MoodData.topics.forEach((topic) => { $('topicFilter').insertAdjacentHTML('beforeend', `<option value="${topic.id}">${topic.name}</option>`); });
-  ['Hope', 'Anxiety', 'Excitement', 'Frustration', 'Joy', 'Neutral'].forEach((emotion) => { $('emotionFilter').insertAdjacentHTML('beforeend', `<option value="${emotion}">${emotion}</option>`); });
-  map = L.map('map', {
-    attributionControl: false,
-    scrollWheelZoom: true,
-    touchZoom: true,
-    doubleClickZoom: true,
-    boxZoom: true,
-  }).setView([24, 10], 1.35);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 19 }).addTo(map);
-  bindEvents();
-  renderBlueskyStatus();
-  setActiveView(activeView);
-  render();
-  refreshArchive();
-  window.setInterval(refreshArchive, ARCHIVE_REFRESH_MS);
-  try {
-    await loadCountryBoundaries();
-  } catch (error) {
-    console.error(error);
-    $('map').setAttribute('aria-label', 'World sentiment map unavailable');
-    $('map').insertAdjacentHTML('afterend', '<p class="map-error">World boundaries could not be loaded. Geographic mood data is temporarily unavailable.</p>');
-  }
+  // Render the empty archive state while the persisted data loads.
+  renderDashboard(selectedData());
+  
+  // Load persisted sentiment analyses
+  await loadArchive();
+  const archiveData = selectedData();
+  const emotionOptions = [...new Set(bluesky.posts.flatMap((post) => parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label)).filter(Boolean))];
+  const topicOptions = [...new Set(bluesky.posts.flatMap((post) => parseArray(post.topics)).filter(Boolean))];
+  $('emotionFilter').innerHTML = '<option value="all">All emotions</option>' + emotionOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+  $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+  renderDashboard(archiveData);
+  
+  // Refresh archive periodically
+  setInterval(loadArchive, ARCHIVE_REFRESH_MS);
 }
-init();
+
+// Start application
+window.addEventListener('DOMContentLoaded', init);
