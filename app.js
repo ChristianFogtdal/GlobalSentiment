@@ -243,6 +243,13 @@ async function loadBlueskySample() {
     renderDataReview();
   }
 }
+
+function refreshWhenVisible() {
+  if (!document.hidden && Date.now() - bluesky.lastRequestAt >= BLUESKY_REFRESH_MS) {
+    loadBlueskySample();
+  }
+}
+
 function renderMap(countries) {
   if (!countryLayer) return;
   const countriesByBoundaryId = new Map(countries.map((country) => [country.boundaryId, country]));
@@ -304,6 +311,7 @@ function bindEvents() {
   $('topicFilter').onchange = (event) => { state.topic = event.target.value; render(); };
   $('sortTopics').onchange = (event) => { state.sort = event.target.value; render(); };
   $('refreshBluesky').onclick = loadBlueskySample;
+  document.addEventListener('visibilitychange', refreshWhenVisible);
   document.querySelectorAll('.view-tab').forEach((tab) => { tab.onclick = () => setActiveView(tab.dataset.view); });
   $('resetFilters').onclick = () => { state.time = '24h'; state.emotion = 'all'; state.topic = 'all'; ['timeFilter', 'emotionFilter', 'topicFilter'].forEach((id) => { $(id).value = state[id.replace('Filter', '')] || 'all'; }); render(); };
   document.addEventListener('click', (event) => { const trigger = event.target.closest('[data-topic], [data-emotion]'); if (!trigger) return; if (trigger.dataset.topic) { state.topic = trigger.dataset.topic; $('topicFilter').value = state.topic; } if (trigger.dataset.emotion) { state.emotion = trigger.dataset.emotion; $('emotionFilter').value = state.emotion; } render(); });
