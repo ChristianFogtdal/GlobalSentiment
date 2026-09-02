@@ -19,21 +19,24 @@ function escapeHtml(value) {
   element.textContent = value;
   return element.innerHTML;
 }
-function matchesTerm(text, term) {
-  const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\b${escapedTerm}\\b`, 'i').test(text);
-}
 function formatTimestamp(value) {
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
 }
 function postFromArchive(row) {
   return {
-    uri: row.uri,
+    uri: row.post_uri,
     text: row.post_text,
     author: row.author_handle,
     originalLanguage: row.original_language,
     timestamp: formatTimestamp(row.published_at),
     url: row.source_url,
+    score: Math.round((row.score ?? 0) * 100),
+    sentiment: row.sentiment || 'unknown',
+    confidence: row.confidence ?? 0,
+    emotions: Array.isArray(row.emotions) ? row.emotions : (typeof row.emotions === 'string' ? JSON.parse(row.emotions) : []),
+    topics: Array.isArray(row.topics) ? row.topics : (typeof row.topics === 'string' ? JSON.parse(row.topics) : []),
+    aiStance: row.ai_tooling_stance || 'not_applicable',
+    rationale: row.rationale || '',
   };
 }
 async function requestArchive(path, options = {}) {
@@ -58,7 +61,7 @@ async function loadArchive() {
   const from = reviewPage.index * REVIEW_PAGE_SIZE;
   const to = from + REVIEW_PAGE_SIZE - 1;
   const { rows, totalCount } = await requestArchive(
-    'bluesky_posts?select=uri,author_handle,post_text,original_language,published_at,source_url&order=published_at.desc',
+    'completed_post_analyses?select=post_uri,post_text,author_handle,original_language,published_at,source_url,sentiment,score,confidence,emotions,topics,ai_tooling_stance,rationale&order=published_at.desc',
     { headers: { Prefer: 'count=exact', Range: `${from}-${to}` } }
   );
   bluesky.posts = rows.map(postFromArchive);
@@ -97,49 +100,13 @@ function renderSources(data) {
   $('sourceList').innerHTML = sources.map((item) => `<div class="source"><span>${item.source}</span><p>“${item.text}”</p><b>${item.topic}</b></div>`).join('');
 }
 
-function analysePost(text) {
-  const normalizedText = text.toLowerCase();
-  const sentimentRules = [
-    { terms: ['advance', 'advanced', 'improve', 'improved', 'safe', 'safeguard', 'accessible', 'benefit', 'progress'], score: 8, label: 'positive' },
-    { terms: ['risk', 'risks', 'harm', 'threat', 'outage', 'concern', 'failure', 'critical'], score: -10, label: 'negative' },
-  ];
-  const topicRules = [
-    { topic: 'AI safety', emotion: 'Caution', terms: ['safety', 'safe', 'safeguard', 'preparedness', 'risk', 'harm'] },
-    { topic: 'Model evaluation', emotion: 'Curiosity', terms: ['evaluated', 'evaluation', 'benchmark', 'capability', 'capabilities', 'model'] },
-    { topic: 'Cybersecurity', emotion: 'Concern', terms: ['cybersecurity', 'security', 'critical threshold'] },
-    { topic: 'AI releases', emotion: 'Excitement', terms: ['release', 'preview', 'launch', 'announcing'] },
-    { topic: 'AI research', emotion: 'Curiosity', terms: ['research', 'learn', 'learning', 'science'] },
-  ];
-  const matches = [];
-  let score = 50;
-  for (const rule of sentimentRules) {
-    const matchedTerms = rule.terms.filter((term) => matchesTerm(normalizedText, term));
-    if (matchedTerms.length) {
-      score += rule.score * matchedTerms.length;
-      matches.push(...matchedTerms.map((term) => `${rule.label}: ${term}`));
-    }
-  }
-  const matchedTopics = topicRules.map((rule) => ({ ...rule, matchedTerms: rule.terms.filter((term) => matchesTerm(normalizedText, term)) })).filter((rule) => rule.matchedTerms.length);
-  const leadingTopic = matchedTopics.sort((first, second) => second.matchedTerms.length - first.matchedTerms.length)[0];
-  if (leadingTopic) matches.push(...leadingTopic.matchedTerms.map((term) => `topic: ${term}`));
-  score = Math.max(0, Math.min(100, score));
-  return {
-    score,
-    sentiment: sentimentLabel(score),
-    mood: score >= 60 ? 'Upbeat' : score <= 40 ? 'Downbeat' : 'Mixed',
-    emotion: leadingTopic?.emotion || 'Neutral',
-    topic: leadingTopic?.topic || 'General AI',
-    evidence: matches.length ? matches.join('; ') : 'No configured rule matched',
-  };
-}
-
 function renderDataReview() {
   const list = $('dataReviewList');
   const count = $('reviewCount');
   const pagination = $('reviewPagination');
   if (!bluesky.posts.length) {
-    list.innerHTML = `<tr><td colspan="10" class="empty">${bluesky.isLoading ? 'Loading the public Bluesky sample...' : 'No Bluesky sample has been loaded yet.'}</td></tr>`;
-    count.textContent = 'Waiting for sample';
+    list.innerHTML = `<tr><td colspan="10" class="empty">${bluesky.isLoading ? 'Loading persisted sentiment analysis...' : 'No analyzed posts available yet. Ingestion & analysis runs on a schedule.'}</td></tr>`;
+    count.textContent = 'Waiting for analysis';
     pagination.innerHTML = '';
     return;
   }
@@ -150,8 +117,7 @@ function renderDataReview() {
   const lastRow = firstRow + bluesky.posts.length - 1;
   count.textContent = `${number.format(totalCount)} archived posts`;
   list.innerHTML = bluesky.posts.map((post) => {
-    const analysis = analysePost(post.text);
-    return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td>${escapeHtml(post.originalLanguage || 'Not supplied')}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${analysis.score}/100<br><span>${escapeHtml(analysis.sentiment)}</span></td><td>${escapeHtml(analysis.mood)}</td><td>${escapeHtml(analysis.emotion)}</td><td>${escapeHtml(analysis.topic)}</td><td class="rule-evidence">${escapeHtml(analysis.evidence)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
+    return `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td>${escapeHtml(post.originalLanguage || 'Not supplied')}</td><td class="post-text">${escapeHtml(post.text)}</td><td>${post.score}/100<br><span>${escapeHtml(sentimentLabel(post.score))}</span></td><td>${(post.confidence * 100).toFixed(0)}%</td><td title="${post.emotions.map((emotion) => `${emotion.label} (${(emotion.confidence * 100).toFixed(0)}%)`).join(', ')}">${post.emotions.length ? escapeHtml(post.emotions.slice(0, 2).map((emotion) => emotion.label).join(', ')) : 'N/A'}</td><td>${post.topics.length ? escapeHtml(post.topics.join(', ')) : 'N/A'}</td><td class="rule-evidence" title="${escapeHtml(post.rationale)}">${escapeHtml(post.rationale.slice(0, 60))}${post.rationale.length > 60 ? '…' : ''}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`;
   }).join('');
   pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${currentPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${currentPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${currentPage >= totalPages ? 'disabled' : ''}>Next</button>`;
   const prevButton = $('reviewPrevPage');
