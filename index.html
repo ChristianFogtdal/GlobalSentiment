@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Global Mood Intelligence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#top" aria-label="Global Mood Intelligence home"><span class="brand-mark">G</span>Global Mood <b>Intelligence</b></a>
+        <div class="status"><span class="pulse"></span> Demo replay <span id="updatedAt"></span></div>
+      </header>
+
+      <section class="masthead" id="top">
+        <div>
+          <p class="eyebrow">Public conversation, aggregated</p>
+          <h1>What is moving the world's mood?</h1>
+          <p class="lede">A transparent view of current sentiment, the topics behind it, and where the signal is changing.</p>
+        </div>
+        <div class="filters" aria-label="Dashboard filters">
+          <label>Window<select id="timeFilter"><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="1h">Last hour</option></select></label>
+          <label>Emotion<select id="emotionFilter"><option value="all">All emotions</option></select></label>
+          <label>Topic<select id="topicFilter"><option value="all">All topics</option></select></label>
+          <button class="reset" id="resetFilters" type="button">Reset</button>
+        </div>
+      </section>
+
+      <section class="metric-strip" aria-label="Overall mood summary">
+        <div class="score-block"><p>Overall mood</p><div><strong id="moodScore">--</strong><span>/100</span></div><span class="sentiment-label" id="moodLabel"></span></div>
+        <div class="metric"><p>Movement</p><strong id="movement"></strong><span id="movementNote"></span></div>
+        <div class="metric"><p>Analysed items</p><strong id="sampleSize"></strong><span id="sourceNote"></span></div>
+        <div class="metric"><p>Data quality</p><strong id="confidence"></strong><span>Across 6 tracked countries</span></div>
+        <div class="trend"><div class="trend-heading"><p>Mood trend</p><span id="trendRange"></span></div><svg id="trendChart" viewBox="0 0 350 70" role="img" aria-label="Mood trend chart"></svg></div>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="panel explanation-panel">
+          <div class="panel-heading"><div><p class="eyebrow">AI-generated explanation</p><h2>What changed</h2></div><span class="model-note">Model output</span></div>
+          <p id="explanation" class="explanation"></p>
+          <div class="evidence" id="evidence"></div>
+          <p class="caveat">This summary identifies patterns in public discussion, not proven causes. Classification can be less reliable for sarcasm, slang, and mixed-language text.</p>
+        </article>
+
+        <article class="panel emotions-panel">
+          <div class="panel-heading"><div><p class="eyebrow">Emotional composition</p><h2>Emotion breakdown</h2></div><span id="dominantEmotion" class="dominant"></span></div>
+          <div id="emotionList" class="emotion-list"></div>
+        </article>
+
+        <article class="panel topics-panel">
+          <div class="panel-heading topic-heading"><div><p class="eyebrow">Conversation drivers</p><h2>Hot topics</h2></div><label class="sort-label">Sort<select id="sortTopics"><option value="impact">Mood impact</option><option value="volume">Mention volume</option><option value="growth">Fastest growth</option></select></label></div>
+          <div class="topic-table-wrap"><table><thead><tr><th>Topic</th><th>Volume</th><th>Sentiment</th><th>Impact</th></tr></thead><tbody id="topicList"></tbody></table></div>
+        </article>
+
+        <article class="panel map-panel">
+          <div class="panel-heading"><div><p class="eyebrow">Country-level signals</p><h2>Geographic mood</h2></div><span class="map-legend"><i></i> Lower <i></i> Higher</span></div>
+          <div id="map" aria-label="Interactive world sentiment map"></div>
+          <p class="map-note">Select a marker to inspect country coverage and drivers. Locations are inferred from public content where needed.</p>
+        </article>
+
+        <article class="panel shifts-panel">
+          <div class="panel-heading"><div><p class="eyebrow">Change detection</p><h2>Mood shifts</h2></div><span class="threshold">Threshold: 8 pts</span></div>
+          <div id="shiftList" class="shift-list"></div>
+        </article>
+
+        <article class="panel sources-panel">
+          <div class="panel-heading"><div><p class="eyebrow">Supporting evidence</p><h2>Representative signals</h2></div><span class="source-count">Deduplicated</span></div>
+          <div id="sourceList" class="source-list"></div>
+        </article>
+      </section>
+    </main>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="demo-data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
