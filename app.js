@@ -25,7 +25,18 @@ function matchesTerm(text, term) {
   return new RegExp(`\\b${escapedTerm}\\b`, 'i').test(text);
 }
 function isAiRelated(text) {
-  return /\b(ai|artificial intelligence|llm|language model|chatgpt|gpt|claude|gemini|machine learning|deep learning|neural network|model|models)\b/i.test(text);
+  const aiTerms = [
+    'ai', 'artificial intelligence', 'llm', 'language model', 'chatgpt', 'gpt', 'claude', 'gemini',
+    'copilot', 'cursor', 'perplexity', 'grok', 'mistral', 'llama', 'qwen', 'deepseek', 'fable',
+    'machine learning', 'deep learning', 'neural network', 'generative', 'genai', 'foundation model',
+    'model', 'models', 'ai agent', 'ai agents', 'autonomous agent', 'autonomous agents', 'agentic',
+    'prompt', 'prompting', 'prompt engineering', 'inference', 'fine-tuning', 'fine tuning',
+    'embedding', 'embeddings', 'rag', 'retrieval augmented', 'multimodal', 'text-to-image',
+    'text to image', 'image generation', 'video generation', 'synthetic media', 'coding assistant',
+  ];
+  const excludedPhrases = ['agent orange', 'talent agent', 'real estate agent', 'travel agent'];
+  const normalizedText = text.toLowerCase();
+  return !excludedPhrases.some((phrase) => normalizedText.includes(phrase)) && aiTerms.some((term) => matchesTerm(normalizedText, term));
 }
 function formatTimestamp(value) {
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
