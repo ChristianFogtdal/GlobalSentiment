@@ -14,9 +14,10 @@
     <main class="app-shell">
       <header class="topbar">
         <a class="brand" href="#top" aria-label="Global Mood Intelligence home"><span class="brand-mark">G</span>Global Mood <b>Intelligence</b></a>
-        <div class="status"><span class="pulse"></span> Demo replay <span id="updatedAt"></span></div>
+       <div class="header-actions"><nav class="view-tabs" aria-label="Application views"><button class="view-tab active" data-view="dashboard" type="button">Dashboard</button><button class="view-tab" data-view="data-review" type="button">Data review</button></nav><div class="status"><span class="pulse"></span> Demo replay <span id="updatedAt"></span></div></div>
       </header>
 
+      <section id="dashboardView">
       <section class="masthead" id="top">
         <div>
           <p class="eyebrow">Public conversation, aggregated</p>
@@ -60,7 +61,7 @@
         <article class="panel map-panel">
           <div class="panel-heading"><div><p class="eyebrow">Country-level signals</p><h2>Geographic mood</h2></div><span class="map-legend"><i></i> Lower <i></i> Higher</span></div>
           <div id="map" aria-label="Interactive world sentiment map"></div>
-          <p class="map-note">Select a marker to inspect country coverage and drivers. Locations are inferred from public content where needed.</p>
+          <p class="map-note">Select a country to inspect coverage and drivers. Locations are inferred from public content where needed.</p>
         </article>
 
         <article class="panel shifts-panel">
@@ -72,6 +73,13 @@
           <div class="panel-heading source-heading"><div><p class="eyebrow">Supporting evidence</p><h2>Representative signals</h2></div><div class="bluesky-controls"><button class="bluesky-refresh" id="refreshBluesky" type="button">Refresh Bluesky AI sample</button><span id="blueskyStatus" class="bluesky-status">Auto-refreshes every 5 minutes · up to 10 posts</span></div></div>
           <div id="sourceList" class="source-list"></div>
         </article>
+      </section>
+      </section>
+      <section class="data-review-view" id="dataReviewView" hidden>
+        <div class="review-heading"><div><p class="eyebrow">Source verification</p><h1>Cleaned Bluesky AI data</h1><p class="lede">One public post per row. Text is whitespace-normalized; use the source link to verify the original post on Bluesky.</p></div><span id="reviewCount" class="source-count">Waiting for sample</span></div>
+        <div class="panel review-panel">
+          <div class="topic-table-wrap"><table><thead><tr><th>Published (UTC)</th><th>Author</th><th>Cleaned post text</th><th>Verification</th></tr></thead><tbody id="dataReviewList"></tbody></table></div>
+        </div>
       </section>
     </main>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

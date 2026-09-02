@@ -5,6 +5,7 @@ const BLUESKY_AI_ACCOUNT = 'openaibot.bsky.social';
 const BLUESKY_POST_LIMIT = 10;
 const BLUESKY_REFRESH_MS = 5 * 60 * 1000;
 const bluesky = { posts: [], isLoading: false, lastRequestAt: 0, error: '' };
+let activeView = 'dashboard';
 let map;
 let countryLayer;
 
@@ -47,6 +48,30 @@ function renderSources(data) {
   $('sourceList').innerHTML = sources.map((item) => `<div class="source"><span>${item.source}</span><p>“${item.text}”</p><b>${item.topic}</b></div>`).join('');
 }
 
+function renderDataReview() {
+  const list = $('dataReviewList');
+  const count = $('reviewCount');
+  if (!bluesky.posts.length) {
+    list.innerHTML = `<tr><td colspan="4" class="empty">${bluesky.isLoading ? 'Loading the public Bluesky sample...' : 'No Bluesky sample has been loaded yet.'}</td></tr>`;
+    count.textContent = 'Waiting for sample';
+    return;
+  }
+  count.textContent = `${bluesky.posts.length} cleaned posts`;
+  list.innerHTML = bluesky.posts.map((post) => `<tr><td>${escapeHtml(post.timestamp)}</td><td>@${escapeHtml(post.author)}</td><td class="post-text">${escapeHtml(post.text)}</td><td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open post</a></td></tr>`).join('');
+}
+
+function setActiveView(view) {
+  activeView = view;
+  $('dashboardView').hidden = view !== 'dashboard';
+  $('dataReviewView').hidden = view !== 'data-review';
+  document.querySelectorAll('.view-tab').forEach((tab) => {
+    const isActive = tab.dataset.view === view;
+    tab.classList.toggle('active', isActive);
+    tab.setAttribute('aria-selected', String(isActive));
+  });
+  if (view === 'data-review') renderDataReview();
+}
+
 function renderBlueskyStatus() {
   const button = $('refreshBluesky');
   const status = $('blueskyStatus');
@@ -71,6 +96,7 @@ async function loadBlueskySample() {
   bluesky.isLoading = true;
   bluesky.error = '';
   renderBlueskyStatus();
+  renderDataReview();
   try {
     const parameters = new URLSearchParams({ actor: BLUESKY_AI_ACCOUNT, limit: String(BLUESKY_POST_LIMIT) });
     const response = await fetch(`https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?${parameters}`, { cache: 'no-store' });
@@ -80,15 +106,25 @@ async function loadBlueskySample() {
       .map((item) => item.post)
       .filter((post) => typeof post?.record?.text === 'string' && post.record.text.trim())
       .slice(0, BLUESKY_POST_LIMIT)
-      .map((post) => ({ text: post.record.text.trim(), timestamp: new Date(post.indexedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC' }));
+      .map((post) => {
+        const rkey = post.uri.split('/').at(-1);
+        return {
+          text: post.record.text.replace(/\s+/g, ' ').trim(),
+          author: post.author.handle,
+          timestamp: new Date(post.indexedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC',
+          url: `https://bsky.app/profile/${post.author.handle}/post/${rkey}`,
+        };
+      });
     if (!bluesky.posts.length) throw new Error('No public AI posts were available.');
     bluesky.lastRequestAt = Date.now();
     renderSources(selectedData());
+    renderDataReview();
   } catch (error) {
     bluesky.error = `Could not load Bluesky: ${error.message}`;
   } finally {
     bluesky.isLoading = false;
     renderBlueskyStatus();
+    renderDataReview();
   }
 }
 function renderMap(countries) {
@@ -152,6 +188,7 @@ function bindEvents() {
   $('topicFilter').onchange = (event) => { state.topic = event.target.value; render(); };
   $('sortTopics').onchange = (event) => { state.sort = event.target.value; render(); };
   $('refreshBluesky').onclick = loadBlueskySample;
+  document.querySelectorAll('.view-tab').forEach((tab) => { tab.onclick = () => setActiveView(tab.dataset.view); });
   $('resetFilters').onclick = () => { state.time = '24h'; state.emotion = 'all'; state.topic = 'all'; ['timeFilter', 'emotionFilter', 'topicFilter'].forEach((id) => { $(id).value = state[id.replace('Filter', '')] || 'all'; }); render(); };
   document.addEventListener('click', (event) => { const trigger = event.target.closest('[data-topic], [data-emotion]'); if (!trigger) return; if (trigger.dataset.topic) { state.topic = trigger.dataset.topic; $('topicFilter').value = state.topic; } if (trigger.dataset.emotion) { state.emotion = trigger.dataset.emotion; $('emotionFilter').value = state.emotion; } render(); });
 }
@@ -168,6 +205,7 @@ async function init() {
   L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', { subdomains: 'abcd', maxZoom: 19 }).addTo(map);
   bindEvents();
   renderBlueskyStatus();
+  setActiveView(activeView);
   render();
   loadBlueskySample();
   window.setInterval(loadBlueskySample, BLUESKY_REFRESH_MS);
