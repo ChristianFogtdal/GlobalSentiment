@@ -23,7 +23,7 @@ Open `http://localhost:4173`.
 
 ## Scheduled Bluesky ingestion
 
-The `supabase/` directory contains the secure ingestion function and migration. The browser only reads the Supabase archive. The function searches these public-discussion keywords every 15 minutes: `copilot`, `cursor`, `claude code`, `windsurf`, `vibe coding`, and `ai coding`.
+The `supabase/` directory contains the secure ingestion function and migration. The browser only reads the Supabase archive. Every 15 minutes, the function retrieves up to 10 recent public posts for each of 24 AI-related phrases: core AI concepts, products, AI coding, and societal impact. AT URI deduplication prevents repeat searches from adding the same post.
 
 Before deployment, configure `BLUESKY_HANDLE`, `BLUESKY_APP_PASSWORD`, and a long random `INGESTION_SECRET` as Supabase Edge Function secrets. Create a matching Vault secret and schedule the function only after the function is deployed:
 

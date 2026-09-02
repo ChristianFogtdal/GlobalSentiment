@@ -1,7 +1,32 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const SEARCH_TERMS = ['copilot', 'cursor', '"claude code"', 'windsurf', '"vibe coding"', '"ai coding"'];
-const POSTS_PER_TERM = 25;
+const SEARCH_TERMS = [
+  '"artificial intelligence"',
+  '"generative AI"',
+  'LLM',
+  '"AI model"',
+  'ChatGPT',
+  'Claude',
+  'Gemini',
+  'Copilot',
+  'Cursor',
+  'Perplexity',
+  '"Claude Code"',
+  '"coding agent"',
+  '"AI coding"',
+  '"vibe coding"',
+  'Windsurf',
+  '"AI safety"',
+  '"AI regulation"',
+  '"AI jobs"',
+  '"AI research"',
+  '"AI ethics"',
+  '"open source AI"',
+  '"AI education"',
+  '"AI healthcare"',
+  '"AI climate"',
+];
+const POSTS_PER_TERM = 10;
 const corsHeaders = { 'Content-Type': 'application/json' };
 
 function containsTerm(text: string, term: string) {
