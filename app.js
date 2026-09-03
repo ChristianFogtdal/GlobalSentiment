@@ -950,7 +950,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
       </div>
       <p class="feed-text">${escapeHtml(record.text)}</p>
       <div class="feed-analysis">
-        <span class="sentiment-score ${sentimentClass(record.score)}" style="background: ${scoreColor(record.score)}">${record.score}%</span>
+        <span class="sentiment-score ${sentimentClass(record.score)}" style="color: ${scoreColor(record.score)}">${record.score}%</span>
         <span class="feed-sentiment-label">${escapeHtml(record.sentimentLabel)}</span>
         ${record.topics.length ? `<span class="feed-topics">${escapeHtml(record.topics.join(', '))}</span>` : ''}
         ${record.toolsMentioned.length ? `<span class="feed-tools">${escapeHtml(record.toolsMentioned.join(', '))}</span>` : ''}
