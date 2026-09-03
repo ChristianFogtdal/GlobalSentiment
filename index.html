@@ -13,8 +13,8 @@
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <a class="brand" href="#top" aria-label="Global Mood Intelligence home"><span class="brand-mark">G</span>Global Mood <b>Intelligence</b></a>
-       <div class="header-actions"><nav class="view-tabs" aria-label="Application views"><button class="view-tab active" data-view="dashboard" type="button">Dashboard</button><button class="view-tab" data-view="data-review" type="button">Data review</button></nav><div class="status"><span class="pulse"></span> Live archive <span id="updatedAt"></span></div></div>
+        <a class="brand" href="#top" aria-label="Global Mood Intelligence home"><span class="brand-mark">G</span><span class="brand-name">Global Mood <b>Intelligence</b></span></a>
+       <div class="header-actions"><nav class="view-tabs" aria-label="Application views"><button class="view-tab active" data-view="dashboard" type="button" aria-selected="true">Dashboard</button><button class="view-tab" data-view="data-review" type="button" aria-selected="false">Data review</button></nav><div class="status"><span class="pulse" aria-hidden="true"></span><span class="status-text">Live archive</span> <span id="updatedAt"></span></div></div>
       </header>
 
       <section id="dashboardView">
@@ -33,11 +33,12 @@
       </section>
 
       <section class="metric-strip" aria-label="Overall mood summary">
-        <div class="score-block"><p>Overall mood</p><div><strong id="moodScore">--</strong><span>/100</span></div><span class="sentiment-label" id="moodLabel"></span><span class="score-legend" id="scoreLegend"></span></div>
+        <div class="score-block"><p>Overall mood</p><div><strong id="moodScore">--</strong><span>/100</span></div><span class="sentiment-label" id="moodLabel"></span><span class="score-legend" id="scoreLegend" aria-live="polite"></span><span class="score-delta" id="scoreDelta" aria-live="polite"></span></div>
         <div class="metric"><p>AI-tooling stance</p><strong id="stanceSummary"></strong><span id="stanceNote"></span></div>
         <div class="metric"><p>Analysed items</p><strong id="sampleSize"></strong><span id="sourceNote"></span></div>
         <div class="metric"><p>Average confidence</p><strong id="confidence"></strong><span>Across selected analyses</span></div>
       </section>
+      <p class="method-cue">Scores are derived from AI-related public posts, classified by an automated sentiment model.</p>
 
       <section class="dashboard-grid">
         <article class="panel explanation-panel">
@@ -55,6 +56,7 @@
         <article class="panel topics-panel">
           <div class="panel-heading topic-heading"><div><p class="eyebrow">Conversation drivers</p><h2>Topics</h2></div><label class="sort-label">Sort<select id="sortTopics"><option value="impact">Sentiment difference</option><option value="volume">Mention volume</option></select></label></div>
           <div class="topic-table-wrap"><table><thead><tr><th>Topic</th><th>Volume</th><th>Sentiment</th><th>Difference vs overall</th></tr></thead><tbody id="topicList"></tbody></table></div>
+          <div id="topicsToggleWrap" class="topics-toggle-wrap"></div>
         </article>
 
         <article class="panel sources-panel">
@@ -71,6 +73,6 @@
         </div>
       </section>
     </main>
-    <script src="app.js?v=uxpolish1"></script>
+    <script src="app.js?v=planv2"></script>
   </body>
 </html>

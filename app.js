@@ -117,6 +117,20 @@ function parseArray(value) {
   }
 }
 
+let topicsExpanded = false;
+let emotionsExpanded = false;
+
+function periodAverageScore(hours, offsetHours) {
+  const end = Date.now() - offsetHours * 60 * 60 * 1000;
+  const start = end - hours * 60 * 60 * 1000;
+  const posts = dashboardV2.allPosts.filter((post) => {
+    const t = new Date(post.publishedAt || post.timestamp).getTime();
+    return !Number.isNaN(t) && t >= start && t < end;
+  });
+  if (!posts.length) return null;
+  return Math.round(posts.reduce((sum, post) => sum + post.score, 0) / posts.length);
+}
+
 function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } = {}) {
   const hours = { '1h': 1, '24h': 24, '7d': 24 * 7 }[time] || 24;
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
@@ -135,6 +149,11 @@ function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } =
   const average = (values) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
   const score = average(posts.map((post) => post.score));
   const confidence = average(posts.map((post) => post.confidence * 100));
+  // Movement vs the immediately preceding period of equal length, computed
+  // over the full (unfiltered) dataset so the cue reflects overall momentum
+  // rather than the currently selected emotion/topic slice.
+  const prevScore = periodAverageScore(hours, hours);
+  const delta = prevScore === null || !posts.length ? null : score - prevScore;
   const emotionCounts = new Map();
   posts.forEach((post) => parseArray(post.emotions).forEach((item) => {
     const name = typeof item === 'string' ? item : item.label;
@@ -165,6 +184,8 @@ function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } =
   const selectedTopic = topics.find((item) => item.id === topic);
   return {
     score,
+    prevScore,
+    delta,
     items: posts.length,
     confidence: confidence ? `${confidence}%` : 'N/A',
     emotions,
@@ -452,6 +473,16 @@ function renderDashboardMetrics(data) {
   $('moodScore').textContent = data.score;
   $('moodLabel').textContent = sentimentLabel(data.score);
   $('scoreLegend').textContent = scoreLegendText(data.score, data.items);
+  const deltaEl = $('scoreDelta');
+  if (deltaEl) {
+    if (data.delta === null) {
+      deltaEl.textContent = '';
+      deltaEl.className = 'score-delta';
+    } else {
+      deltaEl.textContent = `${signed(data.delta, ' pts')} vs previous period`;
+      deltaEl.className = `score-delta ${data.delta > 0 ? 'up' : data.delta < 0 ? 'down' : ''}`;
+    }
+  }
   $('stanceSummary').textContent = data.stance;
   $('stanceNote').textContent = 'Most common classification (count)';
   $('sampleSize').textContent = number.format(data.items);
@@ -460,6 +491,8 @@ function renderDashboardMetrics(data) {
 }
 
 function renderDashboard(data) {
+  const isInitialLoad = dashboardV2.isLoading && !dashboardV2.allPosts.length && !dashboardV2.error;
+  document.querySelectorAll('.dashboard-grid .panel').forEach((panel) => panel.classList.toggle('is-loading', isInitialLoad));
   renderDashboardMetrics(data);
   renderEmotions(data.emotions);
   renderTopics(data.topics);
@@ -468,15 +501,32 @@ function renderDashboard(data) {
 }
 
 function renderEmotions(emotions) {
-  $('dominantEmotion').textContent = `Dominant: ${emotions[0]?.[0] || 'N/A'}`;
-  $('emotionList').innerHTML = emotions.length
-    ? emotions.map(([name, share]) => `<button class="emotion-row ${state.emotion === name ? 'selected' : ''}" data-emotion="${name}" type="button"><span>${escapeHtml(name)}</span><div class="bar"><i style="width:${share}%"></i></div><strong>${share}%</strong></button>`).join('')
-    : '<p class="empty">No emotion data for the selected analyses.</p>';
+  $('dominantEmotion').textContent = emotions.length ? `Dominant: ${humanizeLabel(emotions[0][0])}` : 'Dominant: N/A';
+  const DEFAULT_COUNT = 5;
+  const visible = emotionsExpanded ? emotions : emotions.slice(0, DEFAULT_COUNT);
+  const rows = visible.map(([name, share]) => `<button class="emotion-row ${state.emotion === name ? 'selected' : ''}" data-emotion="${name}" type="button" title="Filter the dashboard to posts tagged with this emotion"><span>${escapeHtml(humanizeLabel(name))}</span><div class="bar"><i style="width:${share}%"></i></div><strong>${share}%</strong></button>`).join('');
+  const toggle = emotions.length > DEFAULT_COUNT
+    ? `<button class="show-more-toggle" id="toggleEmotions" type="button">${emotionsExpanded ? 'Show fewer' : `Show all ${emotions.length} emotions`}</button>`
+    : '';
+  $('emotionList').innerHTML = emotions.length ? rows + toggle : '<p class="empty">No emotion data for the selected analyses.</p>';
+  const toggleButton = $('toggleEmotions');
+  if (toggleButton) toggleButton.addEventListener('click', () => { emotionsExpanded = !emotionsExpanded; renderEmotions(emotions); });
 }
 
 function renderTopics(topics) {
   const sorted = [...topics].sort((first, second) => state.sort === 'volume' ? second.volume - first.volume : Math.abs(second.impact) - Math.abs(first.impact));
-  $('topicList').innerHTML = sorted.length ? sorted.map((topic) => `<tr class="topic-row ${state.topic === topic.id ? 'selected' : ''}" data-topic="${topic.id}"><td><b>${escapeHtml(topic.name)}</b><span class="${topic.lowSample ? 'low-sample' : ''}">${topic.lowSample ? `Low sample (${topic.volume} post${topic.volume === 1 ? '' : 's'})` : 'Analyzed posts'}</span></td><td>${number.format(topic.volume)}</td><td><span class="score-dot" style="background:${scoreColor(topic.sentiment)}"></span>${topic.sentiment}</td><td class="${topic.impact >= 0 ? 'impact-positive' : 'impact-negative'}" title="Difference vs the overall mood score for the selected period">${signed(topic.impact, ' pts')}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No topics match this filter.</td></tr>';
+  const DEFAULT_COUNT = 5;
+  const visible = topicsExpanded ? sorted : sorted.slice(0, DEFAULT_COUNT);
+  const rows = visible.map((topic) => `<tr class="topic-row ${state.topic === topic.id ? 'selected' : ''}" data-topic="${topic.id}" title="Filter the dashboard to this topic"><td><b>${escapeHtml(topic.name)}</b><span class="${topic.lowSample ? 'low-sample' : ''}">${topic.lowSample ? `Low sample (${topic.volume} post${topic.volume === 1 ? '' : 's'})` : 'Analyzed posts'}</span></td><td>${number.format(topic.volume)}</td><td><span class="score-dot" style="background:${scoreColor(topic.sentiment)}"></span>${topic.sentiment}</td><td class="${topic.impact >= 0 ? 'impact-positive' : 'impact-negative'}" title="Difference vs the overall mood score for the selected period">${signed(topic.impact, ' pts')}</td></tr>`).join('');
+  $('topicList').innerHTML = sorted.length ? rows : '<tr><td colspan="4" class="empty">No topics match this filter.</td></tr>';
+  const toggleWrap = $('topicsToggleWrap');
+  if (toggleWrap) {
+    toggleWrap.innerHTML = sorted.length > DEFAULT_COUNT
+      ? `<button class="show-more-toggle" id="toggleTopics" type="button">${topicsExpanded ? 'Show fewer' : `Show all ${sorted.length} topics`}</button>`
+      : '';
+    const toggleButton = $('toggleTopics');
+    if (toggleButton) toggleButton.addEventListener('click', () => { topicsExpanded = !topicsExpanded; renderTopics(topics); });
+  }
 }
 
 function renderExplanation(data) {
@@ -485,16 +535,22 @@ function renderExplanation(data) {
     : dashboardV2.allPosts.length
       ? 'The dashboard is aggregating the completed sentiment analyses currently available in the archive.'
       : 'Clean energy and international football are the strongest positive associations, while severe weather and cost-of-living discussion pull in the opposite direction.';
-  const leadingEmotion = data.emotions[0]?.[0] || 'No dominant emotion';
+  const leadingEmotion = data.emotions[0] ? humanizeLabel(data.emotions[0][0]) : 'No dominant emotion';
   $('explanation').textContent = data.items
     ? `Public mood is ${sentimentLabel(data.score).toLowerCase()} at ${data.score}/100, based on ${number.format(data.items)} analyzed posts. ${focus} ${leadingEmotion} is the leading emotion in the selected data.`
     : 'No completed analyses match the selected filters. Widen the time window or reset the filters to see a data-backed summary.';
-  $('evidence').innerHTML = data.topics.slice(0, 3).map((topic) => `<button data-topic="${topic.id}" type="button"><b>${escapeHtml(topic.name)}</b><span>${signed(topic.impact, ' pts')} vs overall score</span></button>`).join('');
+  $('evidence').innerHTML = data.topics.slice(0, 3).map((topic) => `<button data-topic="${topic.id}" type="button" title="Filter the dashboard to this topic"><b>${escapeHtml(topic.name)}</b><span>${signed(topic.impact, ' pts')} vs overall score</span></button>`).join('');
 }
+
+function sentimentClass(score) { return score >= 60 ? 'positive' : score >= 45 ? 'mixed' : 'negative'; }
 
 function renderSources(data) {
   if (data.posts.length) {
-    $('sourceList').innerHTML = data.posts.slice(0, 3).map((post) => `<div class="source"><span>Sample post</span><p>"${escapeHtml(post.text)}"</p><b>${escapeHtml(post.timestamp)}</b></div>`).join('');
+    $('sourceList').innerHTML = data.posts.slice(0, 3).map((post) => {
+      const topicNames = parseArray(post.topics).map((name) => humanizeLabel(name)).slice(0, 2);
+      const emotionNames = parseArray(post.emotions).map((item) => humanizeLabel(typeof item === 'string' ? item : item.label)).slice(0, 2);
+      return `<div class="source"><span>Sample post</span><div class="source-meta"><span class="sentiment-tag ${sentimentClass(post.score)}">${escapeHtml(post.sentiment)}</span>${emotionNames.map((name) => `<span class="meta-chip">${escapeHtml(name)}</span>`).join('')}${topicNames.map((name) => `<span class="meta-chip">${escapeHtml(name)}</span>`).join('')}</div><p>"${escapeHtml(post.text)}"</p><b>${escapeHtml(post.timestamp)}</b></div>`;
+    }).join('');
     return;
   }
   $('sourceList').innerHTML = '<div class="source"><span>Archive</span><p>No completed analyses match the selected filters.</p><b>Try a wider time window or reset filters</b></div>';
@@ -556,22 +612,22 @@ function renderLegacyReview() {
 
   list.innerHTML = bluesky.posts.map((post) => `
     <tr>
-      <td>${escapeHtml(post.timestamp)}</td>
-      <td>@${escapeHtml(post.author)}</td>
-      <td>${escapeHtml(post.originalLanguage || 'Unknown')}</td>
-      <td class="post-text">${escapeHtml(post.text)}</td>
-      <td>
-        <span class="sentiment-score" style="background: ${scoreColor(post.score)}">${post.score}%</span>
+      <td data-label="Published (UTC)">${escapeHtml(post.timestamp)}</td>
+      <td data-label="Author">@${escapeHtml(post.author)}</td>
+      <td data-label="Language">${escapeHtml(post.originalLanguage || 'Unknown')}</td>
+      <td class="post-text" data-label="Post text">${escapeHtml(post.text)}</td>
+      <td data-label="Sentiment (0-100)">
+        <span class="sentiment-score ${sentimentClass(post.score)}" style="background: ${scoreColor(post.score)}">${post.score}%</span>
         <br><small>${escapeHtml(post.sentiment)}</small>
       </td>
-      <td><small>${(post.confidence * 100).toFixed(0)}%</small></td>
-      <td title="${post.emotions.map(e => `${e.label} (${(e.confidence * 100).toFixed(0)}%)`).join(', ')}">
-        ${post.emotions.length > 0 ? post.emotions.slice(0, 2).map(e => escapeHtml(e.label)).join(', ') : 'N/A'}
+      <td data-label="Confidence"><small>${(post.confidence * 100).toFixed(0)}%</small></td>
+      <td data-label="Emotions" title="${post.emotions.map(e => `${humanizeLabel(e.label)} (${(e.confidence * 100).toFixed(0)}%)`).join(', ')}">
+        ${post.emotions.length > 0 ? post.emotions.slice(0, 2).map(e => escapeHtml(humanizeLabel(e.label))).join(', ') : 'N/A'}
       </td>
-      <td>${post.topics.length > 0 ? escapeHtml(post.topics.join(', ')) : 'N/A'}</td>
-      <td>${escapeHtml(post.ai_stance)}</td>
-      <td class="rationale" title="${escapeHtml(post.rationale)}"><small>${escapeHtml(post.rationale.substring(0, 40))}${post.rationale.length > 40 ? '...' : ''}</small></td>
-      <td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
+      <td data-label="Topics">${post.topics.length > 0 ? escapeHtml(post.topics.map(humanizeLabel).join(', ')) : 'N/A'}</td>
+      <td data-label="AI stance">${escapeHtml(aiStanceLabel(post.ai_stance))}</td>
+      <td class="rationale" data-label="Rationale" title="${escapeHtml(post.rationale)}"><small>${escapeHtml(post.rationale.substring(0, 40))}${post.rationale.length > 40 ? '...' : ''}</small></td>
+      <td data-label="Verification"><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
     </tr>
   `).join('');
 }
@@ -622,22 +678,22 @@ function renderV2Review() {
   }
 
   list.innerHTML = blueskyV2.posts.map((post) => {
-    const topicNames = post.topics.map((item) => typeof item === 'string' ? item : item.name).filter(Boolean);
+    const topicNames = post.topics.map((item) => typeof item === 'string' ? item : item.name).filter(Boolean).map(humanizeLabel);
     const rows = [`
     <tr>
-      <td>${escapeHtml(post.timestamp)}</td>
-      <td>@${escapeHtml(post.author)}</td>
-      <td>${escapeHtml(post.originalLanguage || 'Unknown')}</td>
-      <td class="post-text">${escapeHtml(post.text)}</td>
-      <td><span class="sentiment-score" style="background: ${scoreColor(post.displayScore)}">${post.displayScore}%</span></td>
-      <td><small>${escapeHtml(post.sentiment)}</small></td>
-      <td>${post.toolsMentioned.length > 0 ? escapeHtml(post.toolsMentioned.join(', ')) : 'N/A'}</td>
-      <td>${topicNames.length > 0 ? escapeHtml(topicNames.join(', ')) : 'N/A'}</td>
-      <td><small>${(post.confidence * 100).toFixed(0)}%</small></td>
-      <td><small>${escapeHtml(post.provider)}</small></td>
-      <td>${escapeHtml(post.processedTimestamp)}</td>
-      <td><button type="button" class="review-details-toggle" data-uri="${escapeHtml(post.uri)}">${expandedReviewRow === post.uri ? 'Hide' : 'View'}</button></td>
-      <td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
+      <td data-label="Published (UTC)">${escapeHtml(post.timestamp)}</td>
+      <td data-label="Author">@${escapeHtml(post.author)}</td>
+      <td data-label="Language">${escapeHtml(post.originalLanguage || 'Unknown')}</td>
+      <td class="post-text" data-label="Post text">${escapeHtml(post.text)}</td>
+      <td data-label="Score (0-100)"><span class="sentiment-score ${sentimentClass(post.displayScore)}" style="background: ${scoreColor(post.displayScore)}">${post.displayScore}%</span></td>
+      <td data-label="Sentiment"><small>${escapeHtml(humanizeLabel(post.sentiment))}</small></td>
+      <td data-label="Tools mentioned">${post.toolsMentioned.length > 0 ? escapeHtml(post.toolsMentioned.join(', ')) : 'N/A'}</td>
+      <td data-label="Topics">${topicNames.length > 0 ? escapeHtml(topicNames.join(', ')) : 'N/A'}</td>
+      <td data-label="Confidence"><small>${(post.confidence * 100).toFixed(0)}%</small></td>
+      <td data-label="Provider"><small>${escapeHtml(post.provider)}</small></td>
+      <td data-label="Processed (UTC)">${escapeHtml(post.processedTimestamp)}</td>
+      <td data-label="Details"><button type="button" class="review-details-toggle" data-uri="${escapeHtml(post.uri)}">${expandedReviewRow === post.uri ? 'Hide' : 'View'}</button></td>
+      <td data-label="Verification"><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
     </tr>`];
 
     if (expandedReviewRow === post.uri) {
@@ -647,7 +703,7 @@ function renderV2Review() {
         <div class="review-details-card">
           <div><b>Raw sentiment_score</b><span>${post.sentimentScore ?? 'N/A'}</span></div>
           <div><b>Confidence</b><span>${(post.confidence * 100).toFixed(0)}%</span></div>
-          <div><b>Emotions</b><span>${post.emotions.length ? escapeHtml(post.emotions.map((e) => typeof e === 'string' ? e : `${e.name} (${Math.round((e.intensity || 0) * 100)}%)`).join(', ')) : 'N/A'}</span></div>
+          <div><b>Emotions</b><span>${post.emotions.length ? escapeHtml(post.emotions.map((e) => typeof e === 'string' ? humanizeLabel(e) : `${humanizeLabel(e.name)} (${Math.round((e.intensity || 0) * 100)}%)`).join(', ')) : 'N/A'}</span></div>
           <div><b>AI tooling stance</b><span>${escapeHtml(aiStanceLabel(post.aiStance))}</span></div>
           <div><b>Deployment</b><span>${escapeHtml(post.deployment)}</span></div>
           <div><b>Model</b><span>${escapeHtml(post.model)}</span></div>
@@ -696,7 +752,7 @@ function renderBlueskyStatus() {
     status.innerHTML = `⚠️ ${escapeHtml(dashboardV2.error)}`;
     status.className = 'error';
   } else if (dashboardV2.totalCount > 0) {
-    status.innerHTML = `✓ ${number.format(dashboardV2.totalCount)} posts with completed Foundry (V2) sentiment analysis`;
+    status.innerHTML = `✓ ${number.format(dashboardV2.totalCount)} posts with completed sentiment analysis`;
     status.className = 'loaded';
   } else {
     status.innerHTML = '○ No completed analyses yet. The archive will populate when analysis completes.';
