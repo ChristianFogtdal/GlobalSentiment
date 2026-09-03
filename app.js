@@ -552,7 +552,7 @@ function selectedData() {
 
 function renderDashboardMetrics(data) {
   const scoreEl = $('moodScore');
-  scoreEl.textContent = data.items ? data.score : '--';
+  scoreEl.innerHTML = data.items ? `${data.score}<span class="sentiment-scale">/100</span>` : '--';
   scoreEl.style.color = data.items ? scoreColor(data.score) : 'var(--text-muted)';
   $('sampleSize').textContent = number.format(data.items);
 }
