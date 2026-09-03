@@ -112,10 +112,11 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .landing .view-tabs { justify-content: center; gap: 8px; }
 .landing .view-tab { padding: 8px 14px; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
 .landing .view-tab.active { border-color: var(--text-primary); }
-.landing-example { display: flex; flex-direction: column; align-items: center; gap: clamp(16px, 2.5vw, 24px); max-width: 62ch; margin: clamp(16px, 4vh, 40px) 0 0; }
-.landing-quote { max-width: 24ch; margin: 0; color: var(--text-primary); font-size: clamp(1.75rem, 4vw, 3rem); font-weight: 700; line-height: 1.2; letter-spacing: -.03em; }
+.landing-example { display: flex; flex-direction: column; align-items: center; gap: clamp(16px, 2.5vw, 24px); max-width: 62ch; margin: clamp(16px, 4vh, 40px) 0 0; transition: opacity 500ms ease; }
+.landing-example.is-fading { opacity: 0; }
+.landing-quote { max-width: 40ch; min-height: calc(1.2 * 3 * clamp(1.75rem, 4vw, 3rem)); margin: 0; color: var(--text-primary); font-size: clamp(1.75rem, 4vw, 3rem); font-weight: 700; line-height: 1.2; letter-spacing: -.03em; display: flex; align-items: center; }
 .landing-author { margin: clamp(-8px, -1vw, -4px) 0 0; color: var(--text-secondary); font-family: 'DM Mono', monospace; font-size: 13px; letter-spacing: .02em; }
-.landing-analysis { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; width: 100%; gap: 10px 20px; color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+.landing-analysis { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; width: 100%; min-height: 1.4em; gap: 10px 20px; color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
 .landing-analysis span + span { position: relative; padding-left: 20px; }
 .landing-analysis span + span::before { content: ''; position: absolute; left: 0; top: 50%; width: 1px; height: 12px; background: var(--border-normal); transform: translateY(-50%); }
 
@@ -150,7 +151,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
   .landing { padding: 48px 0 40px; gap: 20px; }
   .landing-title { max-width: none; font-size: clamp(2.25rem, 11vw, 3rem); }
   .landing-subtitle { font-size: 15px; }
-  .landing-quote { max-width: none; font-size: clamp(1.5rem, 7vw, 2rem); }
+  .landing-quote { max-width: none; font-size: clamp(1.5rem, 7vw, 2rem); min-height: calc(1.2 * 3 * clamp(1.5rem, 7vw, 2rem)); }
   .landing-analysis { flex-direction: column; gap: 8px; }
   .landing-analysis span + span { padding-left: 0; }
   .landing-analysis span + span::before { display: none; }
@@ -158,4 +159,5 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 
 @media (prefers-reduced-motion: reduce) {
   .section-animate { opacity: 1; transform: none; transition: none !important; }
+  .landing-example { transition: none !important; }
 }

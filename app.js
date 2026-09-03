@@ -1092,8 +1092,52 @@ function initializeAnimations() {
   animatedSections.forEach((element) => observer.observe(element));
 }
 
+// Featured conversation rotation: a small, curated set of illustrative
+// examples cycles on the landing hero, giving the sense of a living stream
+// of AI conversations rather than a single static marketing quote.
+const FEATURED_CONVERSATIONS = [
+  { quote: 'So many bad ideas. So little time. Disasters await.', author: '@stevenwoods.com', analysis: ['13% Negative', 'Reliability, Risk', '86% Confidence'] },
+  { quote: 'When AI takes most jobs and people have to be paid to sit at home, what if not socialism do we call it?', author: '@dansky21.bsky.social', analysis: ['28% Negative', 'Employment impact, Economic systems'] },
+  { quote: "You suggesting ChatGPT isn't 100% accurate \u{1F923}", author: '@algarveceltic.bsky.social', analysis: ['28% Negative', 'Reliability'] },
+  { quote: 'Gemini probably led him to making moldy Lunchables knockoffs, so go nuts, Sir Beast.', author: '@shawnst.bsky.social', analysis: ['20% Negative', 'Quality & reliability, Creativity & misuse'] },
+  { quote: 'Claude in Chrome feels like a real product, not just a demo.', author: '@papoo7.bsky.social', analysis: ['80% Positive', 'Product maturity, User experience'] },
+];
+const FEATURED_ROTATION_MS = 10 * 1000;
+const FEATURED_FADE_MS = 500;
+
+function renderFeaturedConversation(index) {
+  const example = FEATURED_CONVERSATIONS[index];
+  $('landingQuote').textContent = `\u201C${example.quote}\u201D`;
+  $('landingAuthor').textContent = example.author;
+  $('landingAnalysis').innerHTML = example.analysis.map((item) => `<span>${escapeHtml(item)}</span>`).join('');
+}
+
+function initializeFeaturedConversationRotation() {
+  const figure = $('landingExample');
+  if (!figure || !FEATURED_CONVERSATIONS.length) return;
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let index = Math.floor(Math.random() * FEATURED_CONVERSATIONS.length);
+  renderFeaturedConversation(index);
+
+  window.setInterval(() => {
+    const next = (index + 1) % FEATURED_CONVERSATIONS.length;
+    if (prefersReducedMotion) {
+      index = next;
+      renderFeaturedConversation(index);
+      return;
+    }
+    figure.classList.add('is-fading');
+    window.setTimeout(() => {
+      index = next;
+      renderFeaturedConversation(index);
+      figure.classList.remove('is-fading');
+    }, FEATURED_FADE_MS);
+  }, FEATURED_ROTATION_MS);
+}
+
 // Start application
 window.addEventListener('DOMContentLoaded', () => {
   initializeAnimations();
+  initializeFeaturedConversationRotation();
   init();
 });
