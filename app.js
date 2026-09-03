@@ -226,9 +226,13 @@ function archiveDashboardData({ time = 'all', emotion = 'all', topic = 'all' } =
   };
 }
 
-// Hourly sentiment series. Buckets holding fewer than MIN_BUCKET_POSTS are
-// returned with a null score so the chart breaks the line instead of drawing a
-// swing from one or two posts as though it were a trend.
+// Hourly sentiment series keyed strictly on the source post's publication time
+// (published_at), never on processed_at/created_at, which can trail publication
+// by a day or more. Records without a valid publication time are excluded from
+// the trend rather than being bucketed against a substitute timestamp.
+// Buckets holding fewer than MIN_BUCKET_POSTS are returned with a null score so
+// the chart breaks the line instead of drawing a swing from one or two posts as
+// though it were a trend.
 const HOUR_MS = 60 * 60 * 1000;
 const MIN_BUCKET_POSTS = 3;
 
@@ -236,7 +240,8 @@ function trendSeries({ topic = 'all' } = {}) {
   const rows = [];
   dashboardV2.allPosts.forEach((post) => {
     if (topic !== 'all' && !parseArray(post.topics).includes(topic)) return;
-    const time = new Date(post.publishedAt || post.timestamp).getTime();
+    if (!post.publishedAt) return;
+    const time = new Date(post.publishedAt).getTime();
     if (!Number.isNaN(time)) rows.push({ time, score: post.score });
   });
   if (!rows.length) return { points: [], score: null, items: 0 };
@@ -686,19 +691,93 @@ function renderTrend() {
   const first = solid[0];
   const last = solid[solid.length - 1];
   const movement = last.score - first.score;
-  const timeLabel = (value) => new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true });
+  // UTC throughout, matching formatTimestamp()'s convention elsewhere in the app.
+  const timeLabel = (value) => new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
+  const movementLabel = movement === 0
+    ? 'no change'
+    : `${movement > 0 ? 'up' : 'down'} ${Math.abs(movement)} ${Math.abs(movement) === 1 ? 'point' : 'points'}`;
+  // Hover targets: one band per valid bucket, so users can hit a wide column
+  // rather than a 2px line. Excluded buckets get no band and so no tooltip.
+  const bandWidth = (width - padX * 2) / Math.max(span, 1);
+  const hotspots = runs.flatMap((segment) => segment.map((point) => {
+    const cx = x(point.index);
+    return `<rect class="trend-hit" x="${(cx - bandWidth / 2).toFixed(1)}" y="0" width="${bandWidth.toFixed(1)}" height="${height}" fill="transparent"
+      tabindex="0" role="button"
+      aria-label="${escapeHtml(timeLabel(point.start))} UTC, sentiment ${point.score}, ${point.count} ${point.count === 1 ? 'post' : 'posts'}"
+      data-cx="${cx.toFixed(1)}" data-cy="${y(point.score).toFixed(1)}" data-score="${point.score}" data-count="${point.count}" data-start="${point.start}" />`;
+  })).join('');
+
+  const topicName = trendTopic === 'all' ? '' : humanizeLabel(trendTopic);
 
   container.innerHTML = `
     <div class="trend-summary">
       <strong class="trend-score" style="color:${scoreColor(score)}">${score}</strong>
-      <span class="trend-meta">${number.format(items)} posts · ${movement > 0 ? '+' : ''}${movement} over period</span>
+      <span class="trend-meta">${number.format(items)} posts · ${movementLabel}</span>
     </div>
-    <svg class="trend-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hourly average sentiment">
+    <svg class="trend-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" role="group" aria-label="Hourly average sentiment${topicName ? ` for ${topicName}` : ''}">
       <defs><linearGradient id="trendStroke" gradientUnits="userSpaceOnUse" x1="${padX}" x2="${width - padX}">${gradientStops}</linearGradient></defs>
       ${baseline}
       ${paths}
+      <line class="trend-guide" x1="0" x2="0" y1="${padY}" y2="${height - padY}" opacity="0" />
+      <circle class="trend-marker" r="3.5" opacity="0" />
+      ${hotspots}
     </svg>
-    <div class="trend-axis"><span>${timeLabel(first.start)}</span><span>${timeLabel(last.start)}</span></div>`;
+    <div class="trend-tooltip" hidden></div>
+    <div class="trend-axis"><span>${timeLabel(first.start)} UTC</span><span>${timeLabel(last.start)} UTC</span></div>`;
+
+  attachTrendHover(container, { topicName, timeLabel, width, height });
+}
+
+// Pointer/focus interaction. Hit bands are generated only for valid buckets, so
+// excluded ones can never surface a tooltip or an interpolated value.
+function attachTrendHover(container, { topicName, timeLabel, width, height }) {
+  const svg = container.querySelector('.trend-svg');
+  const tooltip = container.querySelector('.trend-tooltip');
+  const marker = container.querySelector('.trend-marker');
+  const guide = container.querySelector('.trend-guide');
+  if (!svg || !tooltip) return;
+
+  const show = (hit) => {
+    const cx = Number(hit.dataset.cx);
+    const cy = Number(hit.dataset.cy);
+    const score = Number(hit.dataset.score);
+    const count = Number(hit.dataset.count);
+    marker.setAttribute('cx', cx);
+    marker.setAttribute('cy', cy);
+    marker.setAttribute('fill', scoreColor(score));
+    marker.setAttribute('opacity', '1');
+    guide.setAttribute('x1', cx);
+    guide.setAttribute('x2', cx);
+    guide.setAttribute('opacity', '1');
+    tooltip.innerHTML = `${topicName ? `<b>${escapeHtml(topicName)}</b>` : ''}
+      <span>${escapeHtml(timeLabel(Number(hit.dataset.start)))} UTC</span>
+      <span>Sentiment: <em style="color:${scoreColor(score)}">${score}</em></span>
+      <span>${number.format(count)} ${count === 1 ? 'post' : 'posts'}</span>`;
+    tooltip.hidden = false;
+    // Position within the rendered box and clamp so edge buckets stay on screen.
+    const box = svg.getBoundingClientRect();
+    const host = container.getBoundingClientRect();
+    const px = (box.left - host.left) + (cx / width) * box.width;
+    const py = (box.top - host.top) + (cy / height) * box.height;
+    const half = tooltip.offsetWidth / 2;
+    const clamped = Math.max(half + 4, Math.min(host.width - half - 4, px));
+    tooltip.style.left = `${clamped}px`;
+    tooltip.style.top = `${Math.max(0, py - tooltip.offsetHeight - 14)}px`;
+  };
+
+  const hide = () => {
+    tooltip.hidden = true;
+    marker.setAttribute('opacity', '0');
+    guide.setAttribute('opacity', '0');
+  };
+
+  svg.querySelectorAll('.trend-hit').forEach((hit) => {
+    hit.addEventListener('pointerenter', () => show(hit));
+    hit.addEventListener('pointerdown', () => show(hit));
+    hit.addEventListener('focus', () => show(hit));
+    hit.addEventListener('blur', hide);
+  });
+  svg.addEventListener('pointerleave', hide);
 }
 
 function populateTrendTopics(topics) {

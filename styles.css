@@ -59,7 +59,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .trend-topic { padding: 7px 30px 7px 12px; border: 1px solid var(--border-subtle); border-radius: 999px; background: transparent url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none' stroke='%23808080' stroke-width='1.4'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 12px center/9px; color: var(--text-primary); font-family: inherit; font-size: 13px; cursor: pointer; appearance: none; transition: border-color 200ms ease, color 200ms ease; }
 .trend-topic:hover { border-color: var(--border-normal); }
 .trend-topic option { background: #0d0d0d; color: var(--text-primary); }
-.trend-chart { width: min(1000px, 100%); transition: opacity 200ms ease; }
+.trend-chart { position: relative; width: min(1000px, 100%); transition: opacity 200ms ease; }
 .trend-chart.is-swapping { opacity: 0; }
 .trend-summary { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: clamp(28px, 4vh, 44px); }
 .trend-score { font-family: 'DM Mono', monospace; font-size: clamp(3rem, 6vw, 4.5rem); font-weight: 500; line-height: .9; letter-spacing: -.05em; transition: color 700ms ease; }
@@ -70,6 +70,16 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .trend-baseline { stroke: var(--border-subtle); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .trend-axis { display: flex; justify-content: space-between; margin-top: 18px; padding: 0 5.6%; color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: .05em; }
 .trend-empty { margin: 0; color: var(--text-muted); font-size: 14px; }
+.trend-hit { cursor: pointer; outline: none; }
+.trend-marker { transition: opacity 160ms ease; pointer-events: none; }
+.trend-guide { stroke: var(--border-normal); stroke-width: 1; vector-effect: non-scaling-stroke; transition: opacity 160ms ease; pointer-events: none; }
+.trend-hit:focus-visible { outline: 1px solid var(--text-secondary); outline-offset: -1px; }
+.trend-tooltip { position: absolute; z-index: 2; display: grid; gap: 3px; padding: 10px 12px; border: 1px solid var(--border-normal); border-radius: 8px; background: #0d0d0d; color: var(--text-secondary); font-size: 12px; line-height: 1.45; text-align: left; white-space: nowrap; transform: translateX(-50%); pointer-events: none; }
+.trend-tooltip[hidden] { display: none; }
+.trend-tooltip b { color: var(--text-primary); font-size: 12px; font-weight: 700; }
+.trend-tooltip em { font-style: normal; font-weight: 700; }
+.trend-tooltip span { font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: .03em; }
+@media (prefers-reduced-motion: reduce) { .trend-marker, .trend-guide { transition: none; } }
 
 /* Landing: near-black editorial product introduction */
 .landing { display: flex; flex-direction: column; align-items: center; gap: clamp(20px, 3vw, 32px); padding: clamp(64px, 12vh, 148px) 0 clamp(56px, 9vh, 112px); border-bottom: 1px solid var(--border-subtle); text-align: center; }
