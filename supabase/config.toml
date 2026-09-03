@@ -2,3 +2,6 @@ project_id = "bsnzcspfrmlihwxqkjyv"
 
 [functions.ingest-bluesky-search]
 verify_jwt = false
+
+[functions.analyse-posts]
+verify_jwt = false

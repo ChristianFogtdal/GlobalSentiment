@@ -18,10 +18,18 @@
       </header>
 
       <section id="dashboardView">
-      <section class="masthead" id="top">
+      <section class="masthead section-animate" id="top">
         <div>
           <p class="eyebrow">Public conversation, aggregated</p>
           <h1>What is moving the world's mood?</h1>
+          <div class="hero-mood" aria-label="Live overall mood">
+            <div class="live-indicator"><span class="badge badge-live">Live</span></div>
+            <div class="hero-score"><strong id="moodScore">--</strong><span>/100</span></div>
+            <span class="sentiment-label" id="moodLabel"></span>
+            <span class="score-legend" id="scoreLegend" aria-live="polite"></span>
+            <span class="score-delta" id="scoreDelta" aria-live="polite"></span>
+            <div class="data-freshness" aria-live="polite"></div>
+          </div>
           <p class="lede">A live read on public sentiment, drawn from analyzed AI-related conversation.</p>
         </div>
         <div class="filters" aria-label="Dashboard filters">
@@ -32,34 +40,40 @@
         </div>
       </section>
 
-      <section class="metric-strip" aria-label="Overall mood summary">
-        <div class="score-block"><p>Overall mood</p><div><strong id="moodScore">--</strong><span>/100</span></div><span class="sentiment-label" id="moodLabel"></span><span class="score-legend" id="scoreLegend" aria-live="polite"></span><span class="score-delta" id="scoreDelta" aria-live="polite"></span></div>
+      <section class="metric-strip section-animate" aria-label="Overall mood summary">
         <div class="metric"><p>AI-tooling stance</p><strong id="stanceSummary"></strong><span id="stanceNote"></span></div>
         <div class="metric"><p>Analysed items</p><strong id="sampleSize"></strong><span id="sourceNote"></span></div>
         <div class="metric"><p>Average confidence</p><strong id="confidence"></strong><span>Across selected analyses</span></div>
       </section>
       <p class="method-cue">Scores are derived from AI-related public posts, classified by an automated sentiment model.</p>
 
+      <section class="post-spotlight section-animate" aria-labelledby="spotlight-title">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Featured post</p><h2 id="spotlight-title">What's driving sentiment</h2></div>
+        </div>
+        <article class="featured-post" aria-live="polite"></article>
+      </section>
+
       <section class="dashboard-grid">
-        <article class="panel explanation-panel">
+        <article class="panel explanation-panel section-animate">
           <div class="panel-heading"><div><p class="eyebrow">Archive summary</p><h2>Executive summary</h2></div></div>
           <p id="explanation" class="explanation"></p>
           <div class="evidence" id="evidence"></div>
           <p class="caveat">This summary identifies patterns in public discussion, not proven causes. Classification can be less reliable for sarcasm, slang, and mixed-language text.</p>
         </article>
 
-        <article class="panel emotions-panel">
+        <article class="panel emotions-panel section-animate">
           <div class="panel-heading"><div><p class="eyebrow">Emotional composition</p><h2>Emotion breakdown</h2></div><span id="dominantEmotion" class="dominant"></span></div>
           <div id="emotionList" class="emotion-list"></div>
         </article>
 
-        <article class="panel topics-panel">
+        <article class="panel topics-panel section-animate">
           <div class="panel-heading topic-heading"><div><p class="eyebrow">Conversation drivers</p><h2>Topics</h2></div><label class="sort-label">Sort<select id="sortTopics"><option value="impact">Sentiment difference</option><option value="volume">Mention volume</option></select></label></div>
           <div class="topic-table-wrap"><table><thead><tr><th>Topic</th><th>Volume</th><th>Sentiment</th><th>Difference vs overall</th></tr></thead><tbody id="topicList"></tbody></table></div>
           <div id="topicsToggleWrap" class="topics-toggle-wrap"></div>
         </article>
 
-        <article class="panel sources-panel">
+        <article class="panel sources-panel section-animate">
           <div class="panel-heading source-heading"><div><p class="eyebrow">Supporting evidence</p><h2>Representative signals</h2><p class="panel-subtitle">A recent sample of analyzed posts, shown for source verification.</p></div><div class="bluesky-controls"><button class="bluesky-refresh" id="refreshBluesky" type="button">Refresh archive</button><span id="blueskyStatus" class="bluesky-status">Loading archive...</span></div></div>
           <div id="sourceList" class="source-list"></div>
         </article>

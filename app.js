@@ -4,6 +4,7 @@ const state = { time: '7d', emotion: 'all', topic: 'all', sort: 'impact' };
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
+const SPOTLIGHT_CACHE_MS = 15 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const bluesky = { posts: [], allPosts: [], isLoading: false, error: '', totalCount: 0 };
@@ -19,6 +20,8 @@ let expandedReviewRow = null; // post_uri of the row whose details expander is o
 let activeView = 'dashboard';
 let map;
 let countryLayer;
+let cachedSpotlightPost = null;
+let spotlightCacheTime = null;
 
 // Utility functions
 function sentimentLabel(score) { return score >= 75 ? 'Very positive' : score >= 60 ? 'Positive' : score >= 45 ? 'Mixed' : score >= 25 ? 'Negative' : 'Very negative'; }
@@ -62,6 +65,82 @@ function timeAgoLabel(date) {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.round(hours / 24);
   return `${days}d ago`;
+}
+
+function selectMostRepresentativePost(posts) {
+  if (!Array.isArray(posts) || posts.length === 0) return null;
+  const validPosts = posts.filter((post) => Number.isFinite(new Date(post.publishedAt).getTime()));
+  if (!validPosts.length) return null;
+  const now = Date.now();
+  const recentPosts = validPosts.filter((post) => {
+    const hoursDiff = (now - new Date(post.publishedAt).getTime()) / (60 * 60 * 1000);
+    return hoursDiff >= 0 && hoursDiff <= 48;
+  });
+  const candidates = recentPosts.length ? recentPosts : validPosts;
+  return [...candidates].sort((first, second) => {
+    const firstEngagement = (first.reply_count || 0) + (first.like_count || 0);
+    const secondEngagement = (second.reply_count || 0) + (second.like_count || 0);
+    return secondEngagement - firstEngagement ||
+      new Date(second.publishedAt).getTime() - new Date(first.publishedAt).getTime();
+  })[0];
+}
+
+function getSpotlightPost(posts) {
+  const now = Date.now();
+  if (cachedSpotlightPost && spotlightCacheTime && now - spotlightCacheTime < SPOTLIGHT_CACHE_MS) return cachedSpotlightPost;
+  cachedSpotlightPost = selectMostRepresentativePost(posts);
+  spotlightCacheTime = now;
+  return cachedSpotlightPost;
+}
+
+function invalidateSpotlightCache() {
+  cachedSpotlightPost = null;
+  spotlightCacheTime = null;
+}
+
+function generatePostInsights(post) {
+  if (!post) return [];
+  const emotion = parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label).filter(Boolean)[0];
+  const topics = parseArray(post.topics).map((item) => typeof item === 'string' ? item : item.name).filter(Boolean).slice(0, 2).map(humanizeLabel);
+  const focus = topics.length ? `focusing on ${topics.join(' and ')}` : 'spanning multiple topics';
+  const engagement = (post.reply_count || 0) + (post.like_count || 0);
+  return [`Dominated by ${humanizeLabel(emotion || 'mixed emotion')}, ${focus}`, `This post resonated with ${number.format(engagement)} engagements`];
+}
+
+function renderPostSpotlight(post) {
+  const article = document.querySelector('.featured-post');
+  if (!article) return;
+  if (!post) {
+    article.innerHTML = '<p class="empty-state">No representative post is available.</p>';
+    return;
+  }
+  const sentiment = sentimentClass(post.score);
+  const timestamp = timeAgoLabel(new Date(post.publishedAt));
+  const insights = generatePostInsights(post);
+  article.innerHTML = `<div class="post-header"><strong>${escapeHtml(post.author || 'Unknown author')}</strong><span class="timestamp">${escapeHtml(timestamp)}</span><span class="sentiment-badge ${sentiment}">${escapeHtml(sentimentLabel(post.score))}</span></div><p class="post-content">${escapeHtml(post.text || '')}</p><div class="post-analysis"><h3>Why this matters</h3><ul class="insights">${insights.map((insight) => `<li>${escapeHtml(insight)}</li>`).join('')}</ul></div>`;
+}
+
+function initializeSpotlight(posts) {
+  renderPostSpotlight(getSpotlightPost(posts));
+}
+
+function formatTimeSinceRefresh(lastRefreshTime) {
+  const refreshTime = new Date(lastRefreshTime).getTime();
+  if (!Number.isFinite(refreshTime)) return 'Updated recently';
+  const diffMs = Math.max(0, Date.now() - refreshTime);
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  if (diffMins < 1) return 'Updated just now';
+  if (diffMins < 60) return `Updated ${diffMins} minute${diffMins === 1 ? '' : 's'} ago`;
+  if (diffHours < 24) return `Updated ${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
+  return 'Updated recently';
+}
+
+function updateFreshnessLabel(lastRefreshTime, sampleCount) {
+  const label = document.querySelector('.data-freshness');
+  if (!label) return;
+  const safeCount = Number.isFinite(Number(sampleCount)) ? number.format(Number(sampleCount)) : '0';
+  label.textContent = `${formatTimeSinceRefresh(lastRefreshTime)} • Based on ${safeCount} analysed posts`;
 }
 
 /**
@@ -436,24 +515,29 @@ async function loadDashboardV2() {
         text: analysis.post_text || '(post text unavailable)',
         author: analysis.author_handle || 'unknown',
         originalLanguage: analysis.original_language || 'unknown',
+        reply_count: analysis.reply_count || 0,
+        like_count: analysis.like_count || 0,
       }));
       dashboardV2.error = '';
     }
     dashboardV2.lastLoadedAt = new Date();
+    invalidateSpotlightCache();
   } catch (error) {
     dashboardV2.error = `Failed to load V2 dashboard archive: ${error.message}`;
     console.error('Dashboard V2 archive load error:', error);
   } finally {
     dashboardV2.isLoading = false;
     renderBlueskyStatus();
+    renderDashboard(selectedData());
+    initializeSpotlight(dashboardV2.allPosts);
     renderFreshness();
   }
 }
 
 function renderFreshness() {
   const el = $('updatedAt');
-  if (!el) return;
-  el.textContent = dashboardV2.lastLoadedAt ? `· Updated ${timeAgoLabel(dashboardV2.lastLoadedAt)}` : '';
+  if (el) el.textContent = dashboardV2.lastLoadedAt ? `· Updated ${timeAgoLabel(dashboardV2.lastLoadedAt)}` : '';
+  updateFreshnessLabel(dashboardV2.lastLoadedAt, dashboardV2.totalCount);
 }
 
 function selectedData() {
@@ -795,7 +879,9 @@ document.getElementById('resetFilters')?.addEventListener('click', () => {
   renderDashboard(selectedData());
 });
 
-document.getElementById('refreshBluesky')?.addEventListener('click', () => loadReviewData(reviewPage));
+document.getElementById('refreshBluesky')?.addEventListener('click', async () => {
+  await Promise.all([loadDashboardV2(), loadReviewData(reviewPage)]);
+});
 
 document.getElementById('reviewSource')?.addEventListener('change', (event) => {
   reviewSource = event.target.value;
@@ -845,12 +931,32 @@ async function init() {
     loadDashboardV2();
     if (reviewSource === 'legacy') loadArchive(reviewPage);
     if (reviewSource === 'v2') loadArchiveV2(reviewPage);
-    if (activeView === 'dashboard') renderDashboard(selectedData());
   }, ARCHIVE_REFRESH_MS);
 
   // Keep the "Updated Xm ago" freshness label current between archive reloads.
   setInterval(renderFreshness, 30 * 1000);
 }
 
+function initializeAnimations() {
+  const animatedSections = document.querySelectorAll('.section-animate');
+  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (prefersReducedMotion || !('IntersectionObserver' in window)) {
+    animatedSections.forEach((element) => element.classList.add('visible'));
+    return;
+  }
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+        observer.unobserve(entry.target);
+      }
+    });
+  }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+  animatedSections.forEach((element) => observer.observe(element));
+}
+
 // Start application
-window.addEventListener('DOMContentLoaded', init);
+window.addEventListener('DOMContentLoaded', () => {
+  initializeAnimations();
+  init();
+});
