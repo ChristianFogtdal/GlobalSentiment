@@ -11,7 +11,7 @@ const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 // Dedicated dataset for the main Dashboard/map view, sourced from
 // completed_post_analyses_v2 (Foundry). Fully independent from `bluesky`/
 // `blueskyV2`, which continue to back the Data review tab's Legacy/V2 toggle.
-const dashboardV2 = { allPosts: [], isLoading: false, error: '', totalCount: 0 };
+const dashboardV2 = { allPosts: [], isLoading: false, error: '', totalCount: 0, lastLoadedAt: null };
 const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
 let reviewSource = 'legacy'; // 'legacy' | 'v2'
@@ -43,7 +43,25 @@ function v2DisplayScore(sentimentScore) {
     : Math.round((sentimentScore + 1) * 50);
 }
 function aiStanceLabel(stance) {
-  return stance === 'not_applicable' || !stance ? 'N/A' : stance;
+  return stance === 'not_applicable' || !stance ? 'N/A' : humanizeLabel(stance);
+}
+// Convert internal snake_case/kebab-case taxonomy labels (topics, stances, etc.)
+// into human-readable, sentence-cased text for display.
+function humanizeLabel(value) {
+  if (!value) return value;
+  const spaced = String(value).replace(/[_-]+/g, ' ').trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+function timeAgoLabel(date) {
+  if (!date) return '';
+  const diffMs = Date.now() - date.getTime();
+  const minutes = Math.round(diffMs / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
 }
 
 /**
@@ -135,11 +153,15 @@ function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } =
   }));
   const topics = [...topicMap.entries()].map(([name, entry]) => {
     const sentiment = average(entry.scores);
-    return { id: name, name, volume: entry.volume, sentiment, emotion: '', impact: Number((sentiment - score).toFixed(1)) };
+    return { id: name, name: humanizeLabel(name), volume: entry.volume, sentiment, emotion: '', impact: Number((sentiment - score).toFixed(1)), lowSample: entry.volume < 3 };
   }).sort((first, second) => second.volume - first.volume);
+  // Prefer the most common *meaningful* stance classification; only fall back
+  // to not_applicable if there is no applicable stance in the selection at all.
   const stanceCounts = new Map();
   posts.forEach((post) => stanceCounts.set(post.ai_stance, (stanceCounts.get(post.ai_stance) || 0) + 1));
-  const stance = [...stanceCounts.entries()].sort((first, second) => second[1] - first[1])[0];
+  const meaningfulStances = [...stanceCounts.entries()].filter(([name]) => name && name !== 'not_applicable');
+  const stance = (meaningfulStances.length ? meaningfulStances : [...stanceCounts.entries()])
+    .sort((first, second) => second[1] - first[1])[0];
   const selectedTopic = topics.find((item) => item.id === topic);
   return {
     score,
@@ -149,7 +171,7 @@ function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } =
     topics,
     selectedTopic,
     selectedEmotion: emotions.find(([name]) => name === emotion),
-    stance: stance ? `${stance[0]} (${stance[1]})` : 'N/A',
+    stance: stance ? (stance[0] === 'not_applicable' ? 'N/A' : `${humanizeLabel(stance[0])} (${stance[1]})`) : 'N/A',
     stanceCount: stance ? stance[1] : 0,
     posts,
   };
@@ -396,26 +418,44 @@ async function loadDashboardV2() {
       }));
       dashboardV2.error = '';
     }
+    dashboardV2.lastLoadedAt = new Date();
   } catch (error) {
     dashboardV2.error = `Failed to load V2 dashboard archive: ${error.message}`;
     console.error('Dashboard V2 archive load error:', error);
   } finally {
     dashboardV2.isLoading = false;
     renderBlueskyStatus();
+    renderFreshness();
   }
+}
+
+function renderFreshness() {
+  const el = $('updatedAt');
+  if (!el) return;
+  el.textContent = dashboardV2.lastLoadedAt ? `· Updated ${timeAgoLabel(dashboardV2.lastLoadedAt)}` : '';
 }
 
 function selectedData() {
   return archiveDashboardData(state);
 }
 
+function scoreLegendText(score, items) {
+  if (!items) return 'No analyses in this window yet';
+  if (score >= 75) return 'Strongly positive conversation';
+  if (score >= 60) return 'Leaning positive';
+  if (score >= 45) return 'Split between positive and negative';
+  if (score >= 25) return 'Leaning negative';
+  return 'Strongly negative conversation';
+}
+
 function renderDashboardMetrics(data) {
   $('moodScore').textContent = data.score;
   $('moodLabel').textContent = sentimentLabel(data.score);
+  $('scoreLegend').textContent = scoreLegendText(data.score, data.items);
   $('stanceSummary').textContent = data.stance;
   $('stanceNote').textContent = 'Most common classification (count)';
   $('sampleSize').textContent = number.format(data.items);
-  $('sourceNote').textContent = 'Completed Foundry (V2) analyses';
+  $('sourceNote').textContent = 'Completed sentiment analyses';
   $('confidence').textContent = data.confidence;
 }
 
@@ -436,14 +476,14 @@ function renderEmotions(emotions) {
 
 function renderTopics(topics) {
   const sorted = [...topics].sort((first, second) => state.sort === 'volume' ? second.volume - first.volume : Math.abs(second.impact) - Math.abs(first.impact));
-  $('topicList').innerHTML = sorted.length ? sorted.map((topic) => `<tr class="topic-row ${state.topic === topic.id ? 'selected' : ''}" data-topic="${topic.id}"><td><b>${escapeHtml(topic.name)}</b><span>Analyzed posts</span></td><td>${number.format(topic.volume)}</td><td><span class="score-dot" style="background:${scoreColor(topic.sentiment)}"></span>${topic.sentiment}</td><td class="${topic.impact >= 0 ? 'impact-positive' : 'impact-negative'}">${signed(topic.impact, ' pts')}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No topics match this filter.</td></tr>';
+  $('topicList').innerHTML = sorted.length ? sorted.map((topic) => `<tr class="topic-row ${state.topic === topic.id ? 'selected' : ''}" data-topic="${topic.id}"><td><b>${escapeHtml(topic.name)}</b><span class="${topic.lowSample ? 'low-sample' : ''}">${topic.lowSample ? `Low sample (${topic.volume} post${topic.volume === 1 ? '' : 's'})` : 'Analyzed posts'}</span></td><td>${number.format(topic.volume)}</td><td><span class="score-dot" style="background:${scoreColor(topic.sentiment)}"></span>${topic.sentiment}</td><td class="${topic.impact >= 0 ? 'impact-positive' : 'impact-negative'}" title="Difference vs the overall mood score for the selected period">${signed(topic.impact, ' pts')}</td></tr>`).join('') : '<tr><td colspan="4" class="empty">No topics match this filter.</td></tr>';
 }
 
 function renderExplanation(data) {
   const focus = data.selectedTopic
     ? `${data.selectedTopic.name} is the active lens, with a sentiment score of ${data.selectedTopic.sentiment}.`
     : dashboardV2.allPosts.length
-      ? 'The dashboard is aggregating the completed Foundry (V2) analyses currently available in the archive.'
+      ? 'The dashboard is aggregating the completed sentiment analyses currently available in the archive.'
       : 'Clean energy and international football are the strongest positive associations, while severe weather and cost-of-living discussion pull in the opposite direction.';
   const leadingEmotion = data.emotions[0]?.[0] || 'No dominant emotion';
   $('explanation').textContent = data.items
@@ -454,7 +494,7 @@ function renderExplanation(data) {
 
 function renderSources(data) {
   if (data.posts.length) {
-    $('sourceList').innerHTML = data.posts.slice(0, 3).map((post) => `<div class="source"><span>Bluesky AI sample</span><p>"${escapeHtml(post.text)}"</p><b>${escapeHtml(post.timestamp)}</b></div>`).join('');
+    $('sourceList').innerHTML = data.posts.slice(0, 3).map((post) => `<div class="source"><span>Sample post</span><p>"${escapeHtml(post.text)}"</p><b>${escapeHtml(post.timestamp)}</b></div>`).join('');
     return;
   }
   $('sourceList').innerHTML = '<div class="source"><span>Archive</span><p>No completed analyses match the selected filters.</p><b>Try a wider time window or reset filters</b></div>';
@@ -737,9 +777,10 @@ async function init() {
   const archiveData = selectedData();
   const emotionOptions = [...new Set(dashboardV2.allPosts.flatMap((post) => parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label)).filter(Boolean))];
   const topicOptions = [...new Set(dashboardV2.allPosts.flatMap((post) => parseArray(post.topics)).filter(Boolean))];
-  $('emotionFilter').innerHTML = '<option value="all">All emotions</option>' + emotionOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
-  $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+  $('emotionFilter').innerHTML = '<option value="all">All emotions</option>' + emotionOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(humanizeLabel(name))}</option>`).join('');
+  $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(humanizeLabel(name))}</option>`).join('');
   renderDashboard(archiveData);
+  renderFreshness();
   
   // Refresh archives periodically. The dashboard aggregation now uses the V2
   // (Foundry) source; the Data review tab additionally refreshes whichever
@@ -750,6 +791,9 @@ async function init() {
     if (reviewSource === 'v2') loadArchiveV2(reviewPage);
     if (activeView === 'dashboard') renderDashboard(selectedData());
   }, ARCHIVE_REFRESH_MS);
+
+  // Keep the "Updated Xm ago" freshness label current between archive reloads.
+  setInterval(renderFreshness, 30 * 1000);
 }
 
 // Start application

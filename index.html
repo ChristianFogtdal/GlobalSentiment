@@ -22,7 +22,7 @@
         <div>
           <p class="eyebrow">Public conversation, aggregated</p>
           <h1>What is moving the world's mood?</h1>
-          <p class="lede">A transparent view of sentiment and the topics represented in the completed analysis archive.</p>
+          <p class="lede">A live read on public sentiment, drawn from analyzed AI-related conversation.</p>
         </div>
         <div class="filters" aria-label="Dashboard filters">
           <label>Window<select id="timeFilter"><option value="24h">Last 24 hours</option><option value="7d" selected>Last 7 days</option><option value="1h">Last hour</option></select></label>
@@ -33,7 +33,7 @@
       </section>
 
       <section class="metric-strip" aria-label="Overall mood summary">
-        <div class="score-block"><p>Overall mood</p><div><strong id="moodScore">--</strong><span>/100</span></div><span class="sentiment-label" id="moodLabel"></span></div>
+        <div class="score-block"><p>Overall mood</p><div><strong id="moodScore">--</strong><span>/100</span></div><span class="sentiment-label" id="moodLabel"></span><span class="score-legend" id="scoreLegend"></span></div>
         <div class="metric"><p>AI-tooling stance</p><strong id="stanceSummary"></strong><span id="stanceNote"></span></div>
         <div class="metric"><p>Analysed items</p><strong id="sampleSize"></strong><span id="sourceNote"></span></div>
         <div class="metric"><p>Average confidence</p><strong id="confidence"></strong><span>Across selected analyses</span></div>
@@ -41,7 +41,7 @@
 
       <section class="dashboard-grid">
         <article class="panel explanation-panel">
-          <div class="panel-heading"><div><p class="eyebrow">Archive summary</p><h2>Selected data</h2></div></div>
+          <div class="panel-heading"><div><p class="eyebrow">Archive summary</p><h2>Executive summary</h2></div></div>
           <p id="explanation" class="explanation"></p>
           <div class="evidence" id="evidence"></div>
           <p class="caveat">This summary identifies patterns in public discussion, not proven causes. Classification can be less reliable for sarcasm, slang, and mixed-language text.</p>
@@ -58,19 +58,19 @@
         </article>
 
         <article class="panel sources-panel">
-          <div class="panel-heading source-heading"><div><p class="eyebrow">Supporting evidence</p><h2>Representative signals</h2></div><div class="bluesky-controls"><button class="bluesky-refresh" id="refreshBluesky" type="button">Refresh archive</button><span id="blueskyStatus" class="bluesky-status">Historical archive loaded from Supabase</span></div></div>
+          <div class="panel-heading source-heading"><div><p class="eyebrow">Supporting evidence</p><h2>Representative signals</h2><p class="panel-subtitle">A recent sample of analyzed posts, shown for source verification.</p></div><div class="bluesky-controls"><button class="bluesky-refresh" id="refreshBluesky" type="button">Refresh archive</button><span id="blueskyStatus" class="bluesky-status">Loading archive...</span></div></div>
           <div id="sourceList" class="source-list"></div>
         </article>
       </section>
       </section>
       <section class="data-review-view" id="dataReviewView" hidden>
-        <div class="review-heading"><div><p class="eyebrow">Source verification</p><h1>Bluesky AI sentiment analysis</h1><p class="lede">LLM-generated sentiment analysis for Bluesky posts. Data is persisted server-side and refreshed periodically. Each analysis includes structured emotions, topics, and AI-tooling stance. Use the source link to verify the original post on Bluesky.</p></div><div class="review-heading-side"><label class="review-source-toggle">Source<select id="reviewSource"><option value="legacy">Legacy</option><option value="v2">V2 (Foundry)</option></select></label><span id="reviewCount" class="source-count">Loading archive</span></div></div>
+        <div class="review-heading"><div><p class="eyebrow">Source verification</p><h1>Bluesky AI sentiment analysis</h1><p class="lede">Verify individual analyses against their original Bluesky posts.</p></div><div class="review-heading-side"><label class="review-source-toggle">Source<select id="reviewSource"><option value="legacy">Standard analysis</option><option value="v2">Latest model (Foundry)</option></select></label><span id="reviewCount" class="source-count">Loading archive</span></div></div>
         <div class="panel review-panel">
           <div class="review-table-wrap"><table><thead id="dataReviewHead"><tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Sentiment (0-100)</th><th>Confidence</th><th>Emotions</th><th>Topics</th><th>AI stance</th><th>Rationale</th><th>Verification</th></tr></thead><tbody id="dataReviewList"></tbody></table></div>
           <div id="reviewPagination" class="review-pagination"></div>
         </div>
       </section>
     </main>
-    <script src="app.js?v=v2dashboard2"></script>
+    <script src="app.js?v=uxpolish1"></script>
   </body>
 </html>
