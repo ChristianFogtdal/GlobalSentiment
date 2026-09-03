@@ -53,6 +53,24 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .emotion-row.is-leading .emotion-track i, .emotion-row.is-leading .emotion-share { background: var(--text-primary); color: var(--text-primary); }
 .emotion-row.is-leading .emotion-share { background: none; }
 
+/* Trend: one line, one metric, one question. No secondary data layer. */
+.trend-control { display: flex; align-items: center; gap: 10px; margin-bottom: clamp(36px, 5vh, 56px); }
+.trend-topic-label { color: var(--text-muted); font-size: 11px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+.trend-topic { padding: 7px 30px 7px 12px; border: 1px solid var(--border-subtle); border-radius: 999px; background: transparent url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none' stroke='%23808080' stroke-width='1.4'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 12px center/9px; color: var(--text-primary); font-family: inherit; font-size: 13px; cursor: pointer; appearance: none; transition: border-color 200ms ease, color 200ms ease; }
+.trend-topic:hover { border-color: var(--border-normal); }
+.trend-topic option { background: #0d0d0d; color: var(--text-primary); }
+.trend-chart { width: min(1000px, 100%); transition: opacity 200ms ease; }
+.trend-chart.is-swapping { opacity: 0; }
+.trend-summary { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: clamp(28px, 4vh, 44px); }
+.trend-score { font-family: 'DM Mono', monospace; font-size: clamp(3rem, 6vw, 4.5rem); font-weight: 500; line-height: .9; letter-spacing: -.05em; transition: color 700ms ease; }
+.trend-meta { color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 13px; letter-spacing: .04em; }
+.trend-svg { display: block; width: 100%; height: clamp(200px, 30vh, 320px); overflow: visible; }
+.trend-line { fill: none; stroke: url(#trendStroke); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.trend-dot { fill: url(#trendStroke); }
+.trend-baseline { stroke: var(--border-subtle); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.trend-axis { display: flex; justify-content: space-between; margin-top: 18px; padding: 0 5.6%; color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: .05em; }
+.trend-empty { margin: 0; color: var(--text-muted); font-size: 14px; }
+
 /* Landing: near-black editorial product introduction */
 .landing { display: flex; flex-direction: column; align-items: center; gap: clamp(20px, 3vw, 32px); padding: clamp(64px, 12vh, 148px) 0 clamp(56px, 9vh, 112px); border-bottom: 1px solid var(--border-subtle); text-align: center; }
 .landing-title { max-width: 14ch; margin: 0; color: var(--text-primary); font-size: clamp(2.75rem, 7vw, 5.25rem); font-weight: 800; line-height: 1.04; letter-spacing: -.045em; }
@@ -76,6 +94,10 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
   .topic-cloud { gap: .4em .7em; }
   .emotion-row { grid-template-columns: 88px 1fr 40px; gap: 12px; }
   .emotion-name { font-size: 13px; }
+  .trend-control { margin-bottom: 32px; }
+  .trend-topic { max-width: 60vw; }
+  .trend-svg { height: 200px; }
+  .trend-axis { font-size: 10px; gap: 12px; }
   .panel { padding: 18px; }
   .panel-heading { align-items: flex-start; flex-direction: column; }
   .review-heading { flex-direction: column; }

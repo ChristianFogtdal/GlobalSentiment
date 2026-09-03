@@ -47,6 +47,16 @@
           <p class="chapter-question">What emotions dominate AI discussions?</p>
           <div class="emotion-spectrum" id="emotionList" aria-live="polite"></div>
         </section>
+
+        <section class="chapter section-animate" aria-labelledby="chapter-trend">
+          <p class="chapter-label" id="chapter-trend">Global sentiment trend</p>
+          <p class="chapter-question">Observe how sentiment evolves over time.</p>
+          <div class="trend-control">
+            <label class="trend-topic-label" for="trendTopic">Topic</label>
+            <select class="trend-topic" id="trendTopic"><option value="all">All topics</option></select>
+          </div>
+          <div class="trend-chart" id="trendChart" aria-live="polite"></div>
+        </section>
       </section>
 
       <section class="data-review-view" id="dataReviewView" hidden>

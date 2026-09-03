@@ -226,6 +226,59 @@ function archiveDashboardData({ time = 'all', emotion = 'all', topic = 'all' } =
   };
 }
 
+// Hourly sentiment series. Buckets holding fewer than MIN_BUCKET_POSTS are
+// returned with a null score so the chart breaks the line instead of drawing a
+// swing from one or two posts as though it were a trend.
+const HOUR_MS = 60 * 60 * 1000;
+const MIN_BUCKET_POSTS = 3;
+
+function trendSeries({ topic = 'all' } = {}) {
+  const rows = [];
+  dashboardV2.allPosts.forEach((post) => {
+    if (topic !== 'all' && !parseArray(post.topics).includes(topic)) return;
+    const time = new Date(post.publishedAt || post.timestamp).getTime();
+    if (!Number.isNaN(time)) rows.push({ time, score: post.score });
+  });
+  if (!rows.length) return { points: [], score: null, items: 0 };
+
+  const buckets = new Map();
+  rows.forEach(({ time, score }) => {
+    const key = Math.floor(time / HOUR_MS);
+    const entry = buckets.get(key) || { total: 0, count: 0 };
+    entry.total += score;
+    entry.count += 1;
+    buckets.set(key, entry);
+  });
+
+  // The archive is front-loaded with backfill, so anchoring the axis to the
+  // full span would leave the line crushed against one edge. Start at the first
+  // bucket that begins a *sustained* run, so an isolated early reading cannot
+  // strand a dot behind a long gap or distort the period movement.
+  const keys = [...buckets.keys()].sort((first, second) => first - second);
+  const isSolid = (key) => buckets.has(key) && buckets.get(key).count >= MIN_BUCKET_POSTS;
+  const sustained = keys.find((key) => isSolid(key) && isSolid(key + 1));
+  const anySolid = keys.find(isSolid);
+  const start = sustained !== undefined ? sustained : (anySolid === undefined ? keys[0] : anySolid);
+  const end = keys[keys.length - 1];
+
+  const points = [];
+  for (let key = start; key <= end; key += 1) {
+    const entry = buckets.get(key);
+    const solid = entry && entry.count >= MIN_BUCKET_POSTS;
+    points.push({
+      start: key * HOUR_MS,
+      count: entry ? entry.count : 0,
+      score: solid ? Math.round(entry.total / entry.count) : null,
+    });
+  }
+  // Report over the charted window so the headline number and the line agree.
+  const windowRows = rows.filter((row) => Math.floor(row.time / HOUR_MS) >= start);
+  const items = windowRows.length || rows.length;
+  const source = windowRows.length ? windowRows : rows;
+  const score = Math.round(source.reduce((sum, row) => sum + row.score, 0) / items);
+  return { points, score, items };
+}
+
 async function requestArchive(path, options = {}) {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
@@ -502,6 +555,8 @@ function renderDashboard(data) {
   renderDashboardMetrics(data);
   renderEmotions(data.emotions);
   renderTopics(data.topics);
+  populateTrendTopics(data.topics);
+  renderTrend();
 }
 
 // Emotions are ranked by share of all non-neutral mentions so the leading
@@ -557,6 +612,112 @@ function renderTopics(topics) {
     const tone = (0.42 + weight * 0.58).toFixed(2);
     return `<span class="topic-word" style="--size:${size}rem;--tone:${tone}" title="${number.format(topic.volume)} posts">${escapeHtml(topic.name)}</span>`;
   }).join('');
+}
+
+// A single line answering a single question. Sparse buckets break the path
+// rather than being interpolated, so the chart never implies a trend it cannot
+// support. Deliberately no volume layer: one chart, one metric.
+let trendTopic = 'all';
+
+function renderTrend() {
+  const container = $('trendChart');
+  if (!container) return;
+  const { points, score, items } = trendSeries({ topic: trendTopic });
+  const solid = points.filter((point) => point.score !== null);
+  // A chart needs at least one connected pair to read as a trend. Isolated dots
+  // scattered across an empty frame look broken rather than sparse.
+  const hasRun = points.some((point, index) => (
+    point.score !== null && points[index + 1] && points[index + 1].score !== null
+  ));
+  if (solid.length < 2 || !hasRun) {
+    container.innerHTML = `<p class="trend-empty">Not enough continuous data yet to chart this topic over time.</p>`;
+    return;
+  }
+
+  const width = 1000;
+  const height = 320;
+  const padX = 56;
+  const padY = 28;
+  const span = Math.max(points.length - 1, 1);
+  const x = (index) => padX + (index / span) * (width - padX * 2);
+  // Anchor the scale around the data's own range, with a floor so a genuinely
+  // flat line stays visually flat instead of being amplified into noise.
+  const values = solid.map((point) => point.score);
+  const low = Math.min(...values);
+  const high = Math.max(...values);
+  const mid = (low + high) / 2;
+  const half = Math.max((high - low) / 2, 8);
+  const minY = Math.max(0, mid - half * 1.35);
+  const maxY = Math.min(100, mid + half * 1.35);
+  const y = (value) => padY + (1 - (value - minY) / Math.max(maxY - minY, 1)) * (height - padY * 2);
+
+  // Split into contiguous runs so gaps stay gaps.
+  const runs = [];
+  let run = [];
+  points.forEach((point, index) => {
+    if (point.score === null) {
+      if (run.length) runs.push(run);
+      run = [];
+      return;
+    }
+    run.push({ index, ...point });
+  });
+  if (run.length) runs.push(run);
+
+  const paths = runs.map((segment) => {
+    if (segment.length === 1) {
+      const only = segment[0];
+      return `<circle class="trend-dot" cx="${x(only.index).toFixed(1)}" cy="${y(only.score).toFixed(1)}" r="3" />`;
+    }
+    const d = segment.map((point, i) => `${i ? 'L' : 'M'}${x(point.index).toFixed(1)} ${y(point.score).toFixed(1)}`).join(' ');
+    return `<path class="trend-line" d="${d}" />`;
+  }).join('');
+
+  const baseline = minY <= 50 && maxY >= 50
+    ? `<line class="trend-baseline" x1="${padX}" x2="${width - padX}" y1="${y(50).toFixed(1)}" y2="${y(50).toFixed(1)}" />`
+    : '';
+
+  // Gradient stops follow the line's own values so colour tracks sentiment
+  // continuously rather than switching at a threshold.
+  const gradientStops = runs.flatMap((segment) => segment.map((point) => (
+    `<stop offset="${(point.index / span * 100).toFixed(2)}%" stop-color="${scoreColor(point.score)}" />`
+  ))).join('');
+
+  const first = solid[0];
+  const last = solid[solid.length - 1];
+  const movement = last.score - first.score;
+  const timeLabel = (value) => new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', hour12: true });
+
+  container.innerHTML = `
+    <div class="trend-summary">
+      <strong class="trend-score" style="color:${scoreColor(score)}">${score}</strong>
+      <span class="trend-meta">${number.format(items)} posts · ${movement > 0 ? '+' : ''}${movement} over period</span>
+    </div>
+    <svg class="trend-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Hourly average sentiment">
+      <defs><linearGradient id="trendStroke" gradientUnits="userSpaceOnUse" x1="${padX}" x2="${width - padX}">${gradientStops}</linearGradient></defs>
+      ${baseline}
+      ${paths}
+    </svg>
+    <div class="trend-axis"><span>${timeLabel(first.start)}</span><span>${timeLabel(last.start)}</span></div>`;
+}
+
+function populateTrendTopics(topics) {
+  const select = $('trendTopic');
+  if (!select) return;
+  const options = topics.filter((topic) => topic.volume >= 5).slice(0, 20);
+  const markup = ['<option value="all">All topics</option>']
+    .concat(options.map((topic) => `<option value="${escapeHtml(topic.id)}">${escapeHtml(topic.name)}</option>`))
+    .join('');
+  if (select.innerHTML === markup) return;
+  const previous = trendTopic;
+  select.innerHTML = markup;
+  // Keep the user's selection across refreshes when the topic still exists.
+  if (previous !== 'all' && options.some((topic) => topic.id === previous)) {
+    select.value = previous;
+  } else {
+    trendTopic = 'all';
+    select.value = 'all';
+  }
 }
 
 function renderDataReview() {
@@ -767,6 +928,18 @@ function renderBlueskyStatus() {
 // Event listeners
 document.querySelectorAll('.view-tab').forEach((tab) => {
   tab.addEventListener('click', () => setActiveView(tab.dataset.view));
+});
+
+document.getElementById('trendTopic')?.addEventListener('change', (event) => {
+  trendTopic = event.target.value;
+  const chart = document.getElementById('trendChart');
+  if (!chart) return;
+  // Brief fade so the swap reads as a transition rather than a redraw.
+  chart.classList.add('is-swapping');
+  window.setTimeout(() => {
+    renderTrend();
+    chart.classList.remove('is-swapping');
+  }, 160);
 });
 
 document.getElementById('reviewSource')?.addEventListener('change', (event) => {
