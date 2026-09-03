@@ -109,9 +109,8 @@ queue-internal fields (`status`, `error_message`, `locked_until`, `retry_count`,
 
 The Data review tab has a **Source** toggle (Legacy / V2 (Foundry)) that switches its query between
 the legacy `completed_post_analyses` view and this new `completed_post_analyses_v2` view. This is a
-manual verification surface only:
+manual verification surface, independent of the main Dashboard/map:
 
-- The main Dashboard/map view always reads the legacy source and is unaffected by this toggle.
 - V2 rows are ordered by `processed_at desc, published_at desc` (most recently analyzed first),
   distinct from the legacy tab's `created_at desc` ordering.
 - V2's canonical `sentiment_score` is `[-1, 1]`; the UI converts it to a 0-100 display score with
@@ -121,8 +120,17 @@ manual verification surface only:
   `ai_tooling_stance`, `rationale`, `deployment`, `model`, `prompt_version`) are available per-row
   via a "View" details expander. `ai_tooling_stance = 'not_applicable'` is labeled "N/A" in the UI.
 
-There is no scheduler/dashboard cutover implied by this: replacing the legacy source on the main
-Dashboard/map is an explicitly separate, not-yet-started future proposal.
+### Main Dashboard/map now reads V2 (Foundry) data
+
+The main Dashboard/map aggregation (`selectedData()` / `archiveDashboardData()`) now sources its data
+exclusively from `completed_post_analyses_v2`, loaded via `loadDashboardV2()`. This is a deliberate
+cutover from the legacy `completed_post_analyses` source, made once V2's one-post and 10-post/20-row
+manual validation passed. Emotions/topics are normalized client-side from V2's `{name, intensity}` /
+`{name, relevance}` object shapes to the plain string/label shapes the aggregation code expects.
+
+The Data review tab's Legacy/V2 toggle is unaffected by this cutover and remains available for
+side-by-side comparison and ongoing spot-checking of individual V2 rows — it uses its own separate
+`bluesky` (legacy) / `blueskyV2` (V2) state, distinct from the dashboard's `dashboardV2` state.
 
 
 See `DEPLOYMENT_SECRETS.txt` at the repo root for the full names-only secret template. Do not

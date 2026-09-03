@@ -6,6 +6,10 @@ const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const bluesky = { posts: [], allPosts: [], isLoading: false, error: '', totalCount: 0 };
 const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
+// Dedicated dataset for the main Dashboard/map view, sourced from
+// completed_post_analyses_v2 (Foundry). Fully independent from `bluesky`/
+// `blueskyV2`, which continue to back the Data review tab's Legacy/V2 toggle.
+const dashboardV2 = { allPosts: [], isLoading: false, error: '', totalCount: 0 };
 const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
 let reviewSource = 'legacy'; // 'legacy' | 'v2'
@@ -96,7 +100,7 @@ function parseArray(value) {
 function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } = {}) {
   const hours = { '1h': 1, '24h': 24, '7d': 24 * 7 }[time] || 24;
   const cutoff = Date.now() - hours * 60 * 60 * 1000;
-  const recentPosts = bluesky.allPosts.filter((post) => {
+  const recentPosts = dashboardV2.allPosts.filter((post) => {
     const publishedAt = new Date(post.publishedAt || post.timestamp).getTime();
     return Number.isNaN(publishedAt) || publishedAt >= cutoff;
   });
@@ -335,6 +339,70 @@ async function loadReviewData(page = reviewPage) {
   }
 }
 
+/**
+ * Load the full completed_post_analyses_v2 (Foundry) archive for the main
+ * Dashboard/map view. This is now the default/sole source for the dashboard
+ * aggregation; the Data review tab's Legacy/V2 toggle remains independent.
+ */
+async function loadDashboardV2() {
+  try {
+    dashboardV2.isLoading = true;
+    renderBlueskyStatus();
+
+    const allAnalyses = [];
+    const pageSize = 1000;
+    let offset = 0;
+    let page;
+    let totalCount = 0;
+    do {
+      const result = await requestArchive(
+        `completed_post_analyses_v2?order=processed_at.desc&limit=${pageSize}&offset=${offset}`,
+        { headers: { Prefer: 'count=exact' } }
+      );
+      page = result.data;
+      totalCount = result.totalCount || totalCount;
+      if (Array.isArray(page)) allAnalyses.push(...page);
+      offset += page?.length || 0;
+    } while (page?.length === pageSize);
+
+    dashboardV2.totalCount = totalCount || allAnalyses.length;
+
+    if (!allAnalyses.length) {
+      dashboardV2.error = 'No completed V2 analyses yet. Check back soon.';
+      dashboardV2.allPosts = [];
+    } else {
+      dashboardV2.allPosts = allAnalyses.map((analysis) => ({
+        uri: analysis.post_uri,
+        score: v2DisplayScore(analysis.sentiment_score),
+        sentiment: analysis.sentiment || 'unknown',
+        confidence: analysis.confidence || 0,
+        // Normalize to the {label, confidence} shape archiveDashboardData expects.
+        emotions: parseArray(analysis.emotions).map((item) => (
+          typeof item === 'string' ? item : { label: item.name, confidence: item.intensity || 0 }
+        )),
+        // Normalize to plain topic-name strings, matching legacy's shape.
+        topics: parseArray(analysis.topics).map((item) => (typeof item === 'string' ? item : item.name)).filter(Boolean),
+        ai_stance: analysis.ai_tooling_stance || 'not_applicable',
+        rationale: analysis.rationale || '',
+        model: analysis.model || 'unknown',
+        timestamp: formatTimestamp(analysis.published_at),
+        publishedAt: analysis.published_at,
+        url: analysis.source_url,
+        text: analysis.post_text || '(post text unavailable)',
+        author: analysis.author_handle || 'unknown',
+        originalLanguage: analysis.original_language || 'unknown',
+      }));
+      dashboardV2.error = '';
+    }
+  } catch (error) {
+    dashboardV2.error = `Failed to load V2 dashboard archive: ${error.message}`;
+    console.error('Dashboard V2 archive load error:', error);
+  } finally {
+    dashboardV2.isLoading = false;
+    renderBlueskyStatus();
+  }
+}
+
 function selectedData() {
   return archiveDashboardData(state);
 }
@@ -345,7 +413,7 @@ function renderDashboardMetrics(data) {
   $('stanceSummary').textContent = data.stance;
   $('stanceNote').textContent = 'Most common classification (count)';
   $('sampleSize').textContent = number.format(data.items);
-  $('sourceNote').textContent = 'Completed Bluesky analyses';
+  $('sourceNote').textContent = 'Completed Foundry (V2) analyses';
   $('confidence').textContent = data.confidence;
 }
 
@@ -372,8 +440,8 @@ function renderTopics(topics) {
 function renderExplanation(data) {
   const focus = data.selectedTopic
     ? `${data.selectedTopic.name} is the active lens, with a sentiment score of ${data.selectedTopic.sentiment}.`
-    : bluesky.allPosts.length
-      ? 'The dashboard is aggregating the completed analyses currently available in the archive.'
+    : dashboardV2.allPosts.length
+      ? 'The dashboard is aggregating the completed Foundry (V2) analyses currently available in the archive.'
       : 'Clean energy and international football are the strongest positive associations, while severe weather and cost-of-living discussion pull in the opposite direction.';
   const leadingEmotion = data.emotions[0]?.[0] || 'No dominant emotion';
   $('explanation').textContent = data.items
@@ -579,14 +647,14 @@ function setActiveView(view) {
 
 function renderBlueskyStatus() {
   const status = $('blueskyStatus');
-  if (bluesky.isLoading) {
+  if (dashboardV2.isLoading) {
     status.innerHTML = '⏳ Loading persisted sentiment analysis...';
     status.className = 'loading';
-  } else if (bluesky.error) {
-    status.innerHTML = `⚠️ ${escapeHtml(bluesky.error)}`;
+  } else if (dashboardV2.error) {
+    status.innerHTML = `⚠️ ${escapeHtml(dashboardV2.error)}`;
     status.className = 'error';
-  } else if (bluesky.totalCount > 0) {
-    status.innerHTML = `✓ ${number.format(bluesky.totalCount)} posts with completed sentiment analysis`;
+  } else if (dashboardV2.totalCount > 0) {
+    status.innerHTML = `✓ ${number.format(dashboardV2.totalCount)} posts with completed Foundry (V2) sentiment analysis`;
     status.className = 'loaded';
   } else {
     status.innerHTML = '○ No completed analyses yet. The archive will populate when analysis completes.';
@@ -661,21 +729,24 @@ async function init() {
   // Render the empty archive state while the persisted data loads.
   renderDashboard(selectedData());
   
-  // Load persisted sentiment analyses
-  await loadArchive();
+  // Load persisted V2 (Foundry) sentiment analyses for the main dashboard,
+  // and the legacy archive for the Data review tab's default Legacy source.
+  await Promise.all([loadDashboardV2(), loadArchive()]);
   const archiveData = selectedData();
-  const emotionOptions = [...new Set(bluesky.allPosts.flatMap((post) => parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label)).filter(Boolean))];
-  const topicOptions = [...new Set(bluesky.allPosts.flatMap((post) => parseArray(post.topics)).filter(Boolean))];
+  const emotionOptions = [...new Set(dashboardV2.allPosts.flatMap((post) => parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label)).filter(Boolean))];
+  const topicOptions = [...new Set(dashboardV2.allPosts.flatMap((post) => parseArray(post.topics)).filter(Boolean))];
   $('emotionFilter').innerHTML = '<option value="all">All emotions</option>' + emotionOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   renderDashboard(archiveData);
   
-  // Refresh archive periodically (reload current page). The dashboard
-  // aggregation always uses the legacy source; the Data review tab additionally
-  // refreshes the V2 source if that's the one currently toggled on.
+  // Refresh archives periodically. The dashboard aggregation now uses the V2
+  // (Foundry) source; the Data review tab additionally refreshes whichever
+  // source is currently toggled on.
   setInterval(() => {
-    loadArchive(reviewSource === 'legacy' ? reviewPage : 1);
+    loadDashboardV2();
+    if (reviewSource === 'legacy') loadArchive(reviewPage);
     if (reviewSource === 'v2') loadArchiveV2(reviewPage);
+    if (activeView === 'dashboard') renderDashboard(selectedData());
   }, ARCHIVE_REFRESH_MS);
 }
 
