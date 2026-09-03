@@ -691,12 +691,8 @@ function renderTrend() {
 
   const first = solid[0];
   const last = solid[solid.length - 1];
-  const movement = last.score - first.score;
   // UTC throughout, matching formatTimestamp()'s convention elsewhere in the app.
   const timeLabel = (value) => new Date(value).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' });
-  const movementLabel = movement === 0
-    ? 'no change'
-    : `${movement > 0 ? 'up' : 'down'} ${Math.abs(movement)} ${Math.abs(movement) === 1 ? 'point' : 'points'}`;
   // Hover targets: one band per valid bucket, so users can hit a wide column
   // rather than a 2px line. Excluded buckets get no band and so no tooltip.
   const bandWidth = (width - padX * 2) / Math.max(span, 1);
@@ -712,8 +708,8 @@ function renderTrend() {
 
   container.innerHTML = `
     <div class="trend-summary">
-      <strong class="trend-score" style="color:${scoreColor(score)}">${score}</strong>
-      <span class="trend-meta">${number.format(items)} posts · ${movementLabel}</span>
+      <strong class="trend-score" style="color:${scoreColor(score)}">${score}<span class="trend-scale">/100</span></strong>
+      <span class="trend-meta">${number.format(items)} posts</span>
     </div>
     <svg class="trend-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" role="group" aria-label="Hourly average sentiment${topicName ? ` for ${topicName}` : ''}">
       <defs><linearGradient id="trendStroke" gradientUnits="userSpaceOnUse" x1="${padX}" x2="${width - padX}">${gradientStops}</linearGradient></defs>

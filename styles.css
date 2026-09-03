@@ -88,6 +88,7 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .trend-chart.is-swapping { opacity: 0; }
 .trend-summary { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-bottom: clamp(28px, 4vh, 44px); }
 .trend-score { font-family: 'DM Mono', monospace; font-size: clamp(3rem, 6vw, 4.5rem); font-weight: 500; line-height: .9; letter-spacing: -.05em; transition: color 700ms ease; }
+.trend-scale { font-size: .32em; font-weight: 500; letter-spacing: -.02em; opacity: .5; }
 .trend-meta { color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 13px; letter-spacing: .04em; }
 .trend-svg { display: block; width: 100%; height: clamp(200px, 30vh, 320px); overflow: visible; }
 .trend-line { fill: none; stroke: url(#trendStroke); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
