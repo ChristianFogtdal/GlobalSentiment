@@ -1,10 +1,8 @@
-// Default to a 7-day window: V2 (Foundry) has a much smaller volume than the
-// legacy archive did, so a 24h window can easily show zero posts.
-const state = { time: '7d', emotion: 'all', topic: 'all', sort: 'impact' };
+// The dashboard aggregates the full archive; the filter controls were removed.
+const state = { time: 'all', emotion: 'all', topic: 'all' };
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
-const SPOTLIGHT_CACHE_MS = 15 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const bluesky = { posts: [], allPosts: [], isLoading: false, error: '', totalCount: 0 };
@@ -18,15 +16,22 @@ let reviewPage = 1;
 let reviewSource = 'legacy'; // 'legacy' | 'v2'
 let expandedReviewRow = null; // post_uri of the row whose details expander is open (V2 only)
 let activeView = 'dashboard';
-let map;
-let countryLayer;
-let cachedSpotlightPost = null;
-let spotlightCacheTime = null;
 
 // Utility functions
-function sentimentLabel(score) { return score >= 75 ? 'Very positive' : score >= 60 ? 'Positive' : score >= 45 ? 'Mixed' : score >= 25 ? 'Negative' : 'Very negative'; }
-function scoreColor(score) { return score >= 70 ? '#118a72' : score >= 60 ? '#58a86d' : score >= 50 ? '#d3aa45' : '#cf6c53'; }
-function signed(value, suffix = '') { return `${value > 0 ? '+' : ''}${value}${suffix}`; }
+function sentimentClass(score) { return score >= 60 ? 'positive' : score >= 45 ? 'mixed' : 'negative'; }
+// Sentiment drives a continuous red -> white -> green ramp so the number
+// itself carries the meaning without any surrounding chart furniture.
+function scoreColor(score) {
+  const clamped = Math.max(0, Math.min(100, Number(score) || 0));
+  const mix = (from, to, t) => from.map((channel, index) => Math.round(channel + (to[index] - channel) * t));
+  const red = [220, 38, 38];
+  const white = [245, 245, 245];
+  const green = [16, 185, 129];
+  const rgb = clamped <= 50
+    ? mix(red, white, clamped / 50)
+    : mix(white, green, (clamped - 50) / 50);
+  return `rgb(${rgb.join(' ')})`;
+}
 function escapeHtml(value) {
   const element = document.createElement('span');
   element.textContent = value;
@@ -65,63 +70,6 @@ function timeAgoLabel(date) {
   if (hours < 24) return `${hours}h ago`;
   const days = Math.round(hours / 24);
   return `${days}d ago`;
-}
-
-function selectMostRepresentativePost(posts) {
-  if (!Array.isArray(posts) || posts.length === 0) return null;
-  const validPosts = posts.filter((post) => Number.isFinite(new Date(post.publishedAt).getTime()));
-  if (!validPosts.length) return null;
-  const now = Date.now();
-  const recentPosts = validPosts.filter((post) => {
-    const hoursDiff = (now - new Date(post.publishedAt).getTime()) / (60 * 60 * 1000);
-    return hoursDiff >= 0 && hoursDiff <= 48;
-  });
-  const candidates = recentPosts.length ? recentPosts : validPosts;
-  return [...candidates].sort((first, second) => {
-    const firstEngagement = (first.reply_count || 0) + (first.like_count || 0);
-    const secondEngagement = (second.reply_count || 0) + (second.like_count || 0);
-    return secondEngagement - firstEngagement ||
-      new Date(second.publishedAt).getTime() - new Date(first.publishedAt).getTime();
-  })[0];
-}
-
-function getSpotlightPost(posts) {
-  const now = Date.now();
-  if (cachedSpotlightPost && spotlightCacheTime && now - spotlightCacheTime < SPOTLIGHT_CACHE_MS) return cachedSpotlightPost;
-  cachedSpotlightPost = selectMostRepresentativePost(posts);
-  spotlightCacheTime = now;
-  return cachedSpotlightPost;
-}
-
-function invalidateSpotlightCache() {
-  cachedSpotlightPost = null;
-  spotlightCacheTime = null;
-}
-
-function generatePostInsights(post) {
-  if (!post) return [];
-  const emotion = parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label).filter(Boolean)[0];
-  const topics = parseArray(post.topics).map((item) => typeof item === 'string' ? item : item.name).filter(Boolean).slice(0, 2).map(humanizeLabel);
-  const focus = topics.length ? `focusing on ${topics.join(' and ')}` : 'spanning multiple topics';
-  const engagement = (post.reply_count || 0) + (post.like_count || 0);
-  return [`Dominated by ${humanizeLabel(emotion || 'mixed emotion')}, ${focus}`, `This post resonated with ${number.format(engagement)} engagements`];
-}
-
-function renderPostSpotlight(post) {
-  const article = document.querySelector('.featured-post');
-  if (!article) return;
-  if (!post) {
-    article.innerHTML = '<p class="empty-state">No representative post is available.</p>';
-    return;
-  }
-  const sentiment = sentimentClass(post.score);
-  const timestamp = timeAgoLabel(new Date(post.publishedAt));
-  const insights = generatePostInsights(post);
-  article.innerHTML = `<div class="post-header"><strong>${escapeHtml(post.author || 'Unknown author')}</strong><span class="timestamp">${escapeHtml(timestamp)}</span><span class="sentiment-badge ${sentiment}">${escapeHtml(sentimentLabel(post.score))}</span></div><p class="post-content">${escapeHtml(post.text || '')}</p><div class="post-analysis"><h3>Why this matters</h3><ul class="insights">${insights.map((insight) => `<li>${escapeHtml(insight)}</li>`).join('')}</ul></div>`;
-}
-
-function initializeSpotlight(posts) {
-  renderPostSpotlight(getSpotlightPost(posts));
 }
 
 function formatTimeSinceRefresh(lastRefreshTime) {
@@ -196,8 +144,7 @@ function parseArray(value) {
   }
 }
 
-let topicsExpanded = false;
-let emotionsExpanded = false;
+
 
 function periodAverageScore(hours, offsetHours) {
   const end = Date.now() - offsetHours * 60 * 60 * 1000;
@@ -210,10 +157,10 @@ function periodAverageScore(hours, offsetHours) {
   return Math.round(posts.reduce((sum, post) => sum + post.score, 0) / posts.length);
 }
 
-function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } = {}) {
-  const hours = { '1h': 1, '24h': 24, '7d': 24 * 7 }[time] || 24;
-  const cutoff = Date.now() - hours * 60 * 60 * 1000;
-  const recentPosts = dashboardV2.allPosts.filter((post) => {
+function archiveDashboardData({ time = 'all', emotion = 'all', topic = 'all' } = {}) {
+  const hours = { '1h': 1, '24h': 24, '7d': 24 * 7 }[time] || null;
+  const cutoff = hours ? Date.now() - hours * 60 * 60 * 1000 : null;
+  const recentPosts = cutoff === null ? dashboardV2.allPosts : dashboardV2.allPosts.filter((post) => {
     const publishedAt = new Date(post.publishedAt || post.timestamp).getTime();
     return Number.isNaN(publishedAt) || publishedAt >= cutoff;
   });
@@ -230,17 +177,19 @@ function archiveDashboardData({ time = '24h', emotion = 'all', topic = 'all' } =
   const confidence = average(posts.map((post) => post.confidence * 100));
   // Movement vs the immediately preceding period of equal length, computed
   // over the full (unfiltered) dataset so the cue reflects overall momentum
-  // rather than the currently selected emotion/topic slice.
-  const prevScore = periodAverageScore(hours, hours);
+  // rather than the currently selected emotion/topic slice. Not meaningful
+  // when the whole archive is in scope.
+  const prevScore = hours ? periodAverageScore(hours, hours) : null;
   const delta = prevScore === null || !posts.length ? null : score - prevScore;
   const emotionCounts = new Map();
   posts.forEach((post) => parseArray(post.emotions).forEach((item) => {
     const name = typeof item === 'string' ? item : item.label;
     if (name) emotionCounts.set(name, (emotionCounts.get(name) || 0) + 1);
   }));
-  const totalEmotions = [...emotionCounts.values()].reduce((sum, value) => sum + value, 0) || 1;
+  // Raw counts are passed through so the renderer can normalise once, after it
+  // has dropped the emotions it ignores.
   const emotions = [...emotionCounts.entries()]
-    .map(([name, count]) => [name, Math.round(count / totalEmotions * 100), 0])
+    .map(([name, count]) => [name, count])
     .sort((first, second) => second[1] - first[1]);
   const topicMap = new Map();
   posts.forEach((post) => parseArray(post.topics).forEach((name) => {
@@ -521,7 +470,6 @@ async function loadDashboardV2() {
       dashboardV2.error = '';
     }
     dashboardV2.lastLoadedAt = new Date();
-    invalidateSpotlightCache();
   } catch (error) {
     dashboardV2.error = `Failed to load V2 dashboard archive: ${error.message}`;
     console.error('Dashboard V2 archive load error:', error);
@@ -529,7 +477,6 @@ async function loadDashboardV2() {
     dashboardV2.isLoading = false;
     renderBlueskyStatus();
     renderDashboard(selectedData());
-    initializeSpotlight(dashboardV2.allPosts);
     renderFreshness();
   }
 }
@@ -544,100 +491,72 @@ function selectedData() {
   return archiveDashboardData(state);
 }
 
-function scoreLegendText(score, items) {
-  if (!items) return 'No analyses in this window yet';
-  if (score >= 75) return 'Strongly positive conversation';
-  if (score >= 60) return 'Leaning positive';
-  if (score >= 45) return 'Split between positive and negative';
-  if (score >= 25) return 'Leaning negative';
-  return 'Strongly negative conversation';
-}
-
 function renderDashboardMetrics(data) {
-  $('moodScore').textContent = data.score;
-  $('moodLabel').textContent = sentimentLabel(data.score);
-  $('scoreLegend').textContent = scoreLegendText(data.score, data.items);
-  const deltaEl = $('scoreDelta');
-  if (deltaEl) {
-    if (data.delta === null) {
-      deltaEl.textContent = '';
-      deltaEl.className = 'score-delta';
-    } else {
-      deltaEl.textContent = `${signed(data.delta, ' pts')} vs previous period`;
-      deltaEl.className = `score-delta ${data.delta > 0 ? 'up' : data.delta < 0 ? 'down' : ''}`;
-    }
-  }
-  $('stanceSummary').textContent = data.stance;
-  $('stanceNote').textContent = 'Most common classification (count)';
+  const scoreEl = $('moodScore');
+  scoreEl.textContent = data.items ? data.score : '--';
+  scoreEl.style.color = data.items ? scoreColor(data.score) : 'var(--text-muted)';
   $('sampleSize').textContent = number.format(data.items);
-  $('sourceNote').textContent = 'Completed sentiment analyses';
-  $('confidence').textContent = data.confidence;
 }
 
 function renderDashboard(data) {
-  const isInitialLoad = dashboardV2.isLoading && !dashboardV2.allPosts.length && !dashboardV2.error;
-  document.querySelectorAll('.dashboard-grid .panel').forEach((panel) => panel.classList.toggle('is-loading', isInitialLoad));
   renderDashboardMetrics(data);
   renderEmotions(data.emotions);
   renderTopics(data.topics);
-  renderExplanation(data);
-  renderSources(data);
 }
+
+// Emotions are ranked by share of all non-neutral mentions so the leading
+// emotion reads as a proportion of meaningful sentiment, not of every tag.
+const IGNORED_EMOTIONS = new Set(['neutral', 'none', 'not_applicable', 'mixed']);
 
 function renderEmotions(emotions) {
-  $('dominantEmotion').textContent = emotions.length ? `Dominant: ${humanizeLabel(emotions[0][0])}` : 'Dominant: N/A';
-  const DEFAULT_COUNT = 5;
-  const visible = emotionsExpanded ? emotions : emotions.slice(0, DEFAULT_COUNT);
-  const rows = visible.map(([name, share]) => `<button class="emotion-row ${state.emotion === name ? 'selected' : ''}" data-emotion="${name}" type="button" title="Filter the dashboard to posts tagged with this emotion"><span>${escapeHtml(humanizeLabel(name))}</span><div class="bar"><i style="width:${share}%"></i></div><strong>${share}%</strong></button>`).join('');
-  const toggle = emotions.length > DEFAULT_COUNT
-    ? `<button class="show-more-toggle" id="toggleEmotions" type="button">${emotionsExpanded ? 'Show fewer' : `Show all ${emotions.length} emotions`}</button>`
-    : '';
-  $('emotionList').innerHTML = emotions.length ? rows + toggle : '<p class="empty">No emotion data for the selected analyses.</p>';
-  const toggleButton = $('toggleEmotions');
-  if (toggleButton) toggleButton.addEventListener('click', () => { emotionsExpanded = !emotionsExpanded; renderEmotions(emotions); });
-}
-
-function renderTopics(topics) {
-  const sorted = [...topics].sort((first, second) => state.sort === 'volume' ? second.volume - first.volume : Math.abs(second.impact) - Math.abs(first.impact));
-  const DEFAULT_COUNT = 5;
-  const visible = topicsExpanded ? sorted : sorted.slice(0, DEFAULT_COUNT);
-  const rows = visible.map((topic) => `<tr class="topic-row ${state.topic === topic.id ? 'selected' : ''}" data-topic="${topic.id}" title="Filter the dashboard to this topic"><td><b>${escapeHtml(topic.name)}</b><span class="${topic.lowSample ? 'low-sample' : ''}">${topic.lowSample ? `Low sample (${topic.volume} post${topic.volume === 1 ? '' : 's'})` : 'Analyzed posts'}</span></td><td>${number.format(topic.volume)}</td><td><span class="score-dot" style="background:${scoreColor(topic.sentiment)}"></span>${topic.sentiment}</td><td class="${topic.impact >= 0 ? 'impact-positive' : 'impact-negative'}" title="Difference vs the overall mood score for the selected period">${signed(topic.impact, ' pts')}</td></tr>`).join('');
-  $('topicList').innerHTML = sorted.length ? rows : '<tr><td colspan="4" class="empty">No topics match this filter.</td></tr>';
-  const toggleWrap = $('topicsToggleWrap');
-  if (toggleWrap) {
-    toggleWrap.innerHTML = sorted.length > DEFAULT_COUNT
-      ? `<button class="show-more-toggle" id="toggleTopics" type="button">${topicsExpanded ? 'Show fewer' : `Show all ${sorted.length} topics`}</button>`
-      : '';
-    const toggleButton = $('toggleTopics');
-    if (toggleButton) toggleButton.addEventListener('click', () => { topicsExpanded = !topicsExpanded; renderTopics(topics); });
-  }
-}
-
-function renderExplanation(data) {
-  const focus = data.selectedTopic
-    ? `${data.selectedTopic.name} is the active lens, with a sentiment score of ${data.selectedTopic.sentiment}.`
-    : dashboardV2.allPosts.length
-      ? 'The dashboard is aggregating the completed sentiment analyses currently available in the archive.'
-      : 'Clean energy and international football are the strongest positive associations, while severe weather and cost-of-living discussion pull in the opposite direction.';
-  const leadingEmotion = data.emotions[0] ? humanizeLabel(data.emotions[0][0]) : 'No dominant emotion';
-  $('explanation').textContent = data.items
-    ? `Public mood is ${sentimentLabel(data.score).toLowerCase()} at ${data.score}/100, based on ${number.format(data.items)} analyzed posts. ${focus} ${leadingEmotion} is the leading emotion in the selected data.`
-    : 'No completed analyses match the selected filters. Widen the time window or reset the filters to see a data-backed summary.';
-  $('evidence').innerHTML = data.topics.slice(0, 3).map((topic) => `<button data-topic="${topic.id}" type="button" title="Filter the dashboard to this topic"><b>${escapeHtml(topic.name)}</b><span>${signed(topic.impact, ' pts')} vs overall score</span></button>`).join('');
-}
-
-function sentimentClass(score) { return score >= 60 ? 'positive' : score >= 45 ? 'mixed' : 'negative'; }
-
-function renderSources(data) {
-  if (data.posts.length) {
-    $('sourceList').innerHTML = data.posts.slice(0, 3).map((post) => {
-      const topicNames = parseArray(post.topics).map((name) => humanizeLabel(name)).slice(0, 2);
-      const emotionNames = parseArray(post.emotions).map((item) => humanizeLabel(typeof item === 'string' ? item : item.label)).slice(0, 2);
-      return `<div class="source"><span>Sample post</span><div class="source-meta"><span class="sentiment-tag ${sentimentClass(post.score)}">${escapeHtml(post.sentiment)}</span>${emotionNames.map((name) => `<span class="meta-chip">${escapeHtml(name)}</span>`).join('')}${topicNames.map((name) => `<span class="meta-chip">${escapeHtml(name)}</span>`).join('')}</div><p>"${escapeHtml(post.text)}"</p><b>${escapeHtml(post.timestamp)}</b></div>`;
-    }).join('');
+  const meaningful = emotions.filter(([name]) => name && !IGNORED_EMOTIONS.has(String(name).toLowerCase()));
+  const container = $('emotionList');
+  if (!meaningful.length) {
+    container.innerHTML = '';
     return;
   }
-  $('sourceList').innerHTML = '<div class="source"><span>Archive</span><p>No completed analyses match the selected filters.</p><b>Try a wider time window or reset filters</b></div>';
+  const total = meaningful.reduce((sum, [, count]) => sum + count, 0) || 1;
+  const ranked = meaningful
+    .map(([name, count]) => [name, count / total * 100])
+    .filter(([, share]) => share >= 1)
+    .slice(0, 7);
+  if (!ranked.length) {
+    container.innerHTML = '';
+    return;
+  }
+  const peak = ranked[0][1] || 1;
+  container.innerHTML = ranked.map(([name, share], index) => `
+    <div class="emotion-row${index === 0 ? ' is-leading' : ''}">
+      <span class="emotion-name">${escapeHtml(humanizeLabel(name))}</span>
+      <span class="emotion-track"><i style="--fill:${Math.round(share / peak * 100)}%"></i></span>
+      <span class="emotion-share">${Math.round(share)}%</span>
+    </div>`).join('');
+}
+
+// The archive holds thousands of long-tail topics. Showing the top slice by
+// volume keeps the cloud readable while still exposing the dominant themes.
+function renderTopics(topics) {
+  const container = $('topicCloud');
+  const top = topics.filter((topic) => topic.volume > 1).slice(0, 28);
+  if (!top.length) {
+    container.innerHTML = '';
+    return;
+  }
+  const max = top[0].volume;
+  const min = top[top.length - 1].volume;
+  const range = Math.max(max - min, 1);
+  // Shuffle deterministically so the cloud reads as a composition rather than
+  // an ordered list, while keeping render output stable between refreshes.
+  const arranged = top
+    .map((topic, index) => ({ topic, order: (index * 7919) % top.length }))
+    .sort((first, second) => first.order - second.order)
+    .map((entry) => entry.topic);
+  container.innerHTML = arranged.map((topic) => {
+    const weight = (topic.volume - min) / range;
+    const size = (1 + weight * 3.2).toFixed(2);
+    const tone = (0.42 + weight * 0.58).toFixed(2);
+    return `<span class="topic-word" style="--size:${size}rem;--tone:${tone}" title="${number.format(topic.volume)} posts">${escapeHtml(topic.name)}</span>`;
+  }).join('');
 }
 
 function renderDataReview() {
@@ -829,6 +748,7 @@ function setActiveView(view) {
 
 function renderBlueskyStatus() {
   const status = $('blueskyStatus');
+  if (!status) return;
   if (dashboardV2.isLoading) {
     status.innerHTML = '⏳ Loading persisted sentiment analysis...';
     status.className = 'loading';
@@ -849,63 +769,11 @@ document.querySelectorAll('.view-tab').forEach((tab) => {
   tab.addEventListener('click', () => setActiveView(tab.dataset.view));
 });
 
-document.getElementById('timeFilter')?.addEventListener('change', (event) => {
-  state.time = event.target.value;
-  renderDashboard(selectedData());
-});
-
-document.getElementById('emotionFilter')?.addEventListener('change', (event) => {
-  state.emotion = event.target.value;
-  renderDashboard(selectedData());
-});
-
-document.getElementById('topicFilter')?.addEventListener('change', (event) => {
-  state.topic = event.target.value;
-  renderDashboard(selectedData());
-});
-
-document.getElementById('sortTopics')?.addEventListener('change', (event) => {
-  state.sort = event.target.value;
-  renderTopics(selectedData().topics);
-});
-
-document.getElementById('resetFilters')?.addEventListener('click', () => {
-  state.time = '7d';
-  state.emotion = 'all';
-  state.topic = 'all';
-  $('timeFilter').value = state.time;
-  $('emotionFilter').value = state.emotion;
-  $('topicFilter').value = state.topic;
-  renderDashboard(selectedData());
-});
-
-document.getElementById('refreshBluesky')?.addEventListener('click', async () => {
-  await Promise.all([loadDashboardV2(), loadReviewData(reviewPage)]);
-});
-
 document.getElementById('reviewSource')?.addEventListener('change', (event) => {
   reviewSource = event.target.value;
   reviewPage = 1;
   expandedReviewRow = null;
   loadReviewData(1);
-});
-
-document.getElementById('emotionList')?.addEventListener('click', (event) => {
-  const button = event.target.closest('.emotion-row');
-  if (button) {
-    state.emotion = state.emotion === button.dataset.emotion ? 'all' : button.dataset.emotion;
-    $('emotionFilter').value = state.emotion;
-    renderDashboard(selectedData());
-  }
-});
-
-document.getElementById('topicList')?.addEventListener('click', (event) => {
-  const row = event.target.closest('.topic-row');
-  if (row) {
-    state.topic = state.topic === row.dataset.topic ? 'all' : row.dataset.topic;
-    $('topicFilter').value = state.topic;
-    renderDashboard(selectedData());
-  }
 });
 
 // Initial load
@@ -916,12 +784,7 @@ async function init() {
   // Load persisted V2 (Foundry) sentiment analyses for the main dashboard,
   // and the legacy archive for the Data review tab's default Legacy source.
   await Promise.all([loadDashboardV2(), loadArchive()]);
-  const archiveData = selectedData();
-  const emotionOptions = [...new Set(dashboardV2.allPosts.flatMap((post) => parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label)).filter(Boolean))];
-  const topicOptions = [...new Set(dashboardV2.allPosts.flatMap((post) => parseArray(post.topics)).filter(Boolean))];
-  $('emotionFilter').innerHTML = '<option value="all">All emotions</option>' + emotionOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(humanizeLabel(name))}</option>`).join('');
-  $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(humanizeLabel(name))}</option>`).join('');
-  renderDashboard(archiveData);
+  renderDashboard(selectedData());
   renderFreshness();
   
   // Refresh archives periodically. The dashboard aggregation now uses the V2
@@ -937,6 +800,8 @@ async function init() {
   setInterval(renderFreshness, 30 * 1000);
 }
 
+// Reveal on enter and reset on exit so each chapter animates every time it is
+// scrolled back into view, not just on first sight.
 function initializeAnimations() {
   const animatedSections = document.querySelectorAll('.section-animate');
   const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -946,12 +811,9 @@ function initializeAnimations() {
   }
   const observer = new IntersectionObserver((entries) => {
     entries.forEach((entry) => {
-      if (entry.isIntersecting) {
-        entry.target.classList.add('visible');
-        observer.unobserve(entry.target);
-      }
+      entry.target.classList.toggle('visible', entry.isIntersecting);
     });
-  }, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+  }, { threshold: 0.15, rootMargin: '0px 0px -10% 0px' });
   animatedSections.forEach((element) => observer.observe(element));
 }
 
