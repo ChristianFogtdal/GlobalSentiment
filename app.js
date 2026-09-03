@@ -13,7 +13,7 @@ const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 const dashboardV2 = { allPosts: [], isLoading: false, error: '', totalCount: 0, lastLoadedAt: null };
 const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
-let reviewSource = 'legacy'; // 'legacy' | 'v2'
+let reviewSource = 'v2'; // 'legacy' | 'v2' -- Latest model (Foundry) is the default on open
 let expandedReviewRow = null; // post_uri of the record whose analysis details are open
 let reviewSearchTerm = ''; // client-side search, scoped to the currently loaded page
 let activeView = 'dashboard';
@@ -1057,8 +1057,8 @@ async function init() {
   renderDashboard(selectedData());
   
   // Load persisted V2 (Foundry) sentiment analyses for the main dashboard,
-  // and the legacy archive for the Data review tab's default Legacy source.
-  await Promise.all([loadDashboardV2(), loadArchive()]);
+  // and the V2 archive for the Data review tab's default Latest model source.
+  await Promise.all([loadDashboardV2(), loadArchiveV2()]);
   renderDashboard(selectedData());
   renderFreshness();
   
