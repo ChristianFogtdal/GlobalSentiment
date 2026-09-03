@@ -5,8 +5,11 @@ const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const bluesky = { posts: [], allPosts: [], isLoading: false, error: '', totalCount: 0 };
+const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
+let reviewSource = 'legacy'; // 'legacy' | 'v2'
+let expandedReviewRow = null; // post_uri of the row whose details expander is open (V2 only)
 let activeView = 'dashboard';
 let map;
 let countryLayer;
@@ -26,6 +29,15 @@ function matchesTerm(text, term) {
 }
 function formatTimestamp(value) {
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
+}
+// Canonical V2 sentiment_score is [-1, 1]; display convention: displayScore = round((score + 1) * 50).
+function v2DisplayScore(sentimentScore) {
+  return sentimentScore === null || sentimentScore === undefined
+    ? 0
+    : Math.round((sentimentScore + 1) * 50);
+}
+function aiStanceLabel(stance) {
+  return stance === 'not_applicable' || !stance ? 'N/A' : stance;
 }
 
 /**
@@ -248,6 +260,81 @@ async function loadArchive(page = reviewPage) {
   }
 }
 
+/**
+ * Load completed V2 (Foundry) post analyses from Supabase, for the Data
+ * review tab only. Fully isolated from the legacy `bluesky` state and from
+ * the main Dashboard/map aggregation, which always uses the legacy source.
+ */
+async function loadArchiveV2(page = reviewPage) {
+  try {
+    blueskyV2.isLoading = true;
+    renderDataReview();
+
+    reviewPage = page;
+    const from = (page - 1) * REVIEW_PAGE_SIZE;
+    const to = from + REVIEW_PAGE_SIZE - 1;
+
+    // V2 default ordering: most recently analyzed first, for validation.
+    const { data: analyses, totalCount } = await requestArchive(
+      `completed_post_analyses_v2?order=processed_at.desc,published_at.desc`,
+      {
+        headers: {
+          Prefer: 'count=exact',
+          Range: `${from}-${to}`,
+        },
+      }
+    );
+
+    blueskyV2.totalCount = totalCount;
+
+    if (!analyses || analyses.length === 0) {
+      blueskyV2.error = 'No completed V2 analyses yet. Check back soon.';
+      blueskyV2.posts = [];
+    } else {
+      blueskyV2.posts = analyses.map((analysis) => ({
+        uri: analysis.post_uri,
+        displayScore: v2DisplayScore(analysis.sentiment_score),
+        sentimentScore: analysis.sentiment_score,
+        sentiment: analysis.sentiment || 'unknown',
+        confidence: analysis.confidence || 0,
+        emotions: parseArray(analysis.emotions),
+        topics: parseArray(analysis.topics),
+        toolsMentioned: parseArray(analysis.tools_mentioned),
+        aiStance: analysis.ai_tooling_stance,
+        rationale: analysis.rationale || '',
+        provider: analysis.provider || 'unknown',
+        deployment: analysis.deployment || 'unknown',
+        model: analysis.model || 'unknown',
+        promptVersion: analysis.prompt_version || 'unknown',
+        processedAt: analysis.processed_at,
+        publishedAt: analysis.published_at,
+        timestamp: formatTimestamp(analysis.published_at),
+        processedTimestamp: analysis.processed_at ? formatTimestamp(analysis.processed_at) : 'N/A',
+        url: analysis.source_url,
+        text: analysis.post_text || '(post text unavailable)',
+        author: analysis.author_handle || 'unknown',
+        originalLanguage: analysis.original_language || 'unknown',
+      }));
+      blueskyV2.error = '';
+    }
+  } catch (error) {
+    blueskyV2.error = `Failed to load V2 archive: ${error.message}`;
+    console.error('V2 archive load error:', error);
+  } finally {
+    blueskyV2.isLoading = false;
+    renderDataReview();
+  }
+}
+
+/** Dispatch archive loading to the currently selected review source. */
+async function loadReviewData(page = reviewPage) {
+  if (reviewSource === 'v2') {
+    await loadArchiveV2(page);
+  } else {
+    await loadArchive(page);
+  }
+}
+
 function selectedData() {
   return archiveDashboardData(state);
 }
@@ -304,6 +391,20 @@ function renderSources(data) {
 }
 
 function renderDataReview() {
+  const head = $('dataReviewHead');
+  if (head) {
+    head.innerHTML = reviewSource === 'v2'
+      ? '<tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Score (0-100)</th><th>Sentiment</th><th>Tools mentioned</th><th>Topics</th><th>Confidence</th><th>Provider</th><th>Processed (UTC)</th><th>Details</th><th>Verification</th></tr>'
+      : '<tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Sentiment (0-100)</th><th>Confidence</th><th>Emotions</th><th>Topics</th><th>AI stance</th><th>Rationale</th><th>Verification</th></tr>';
+  }
+  if (reviewSource === 'v2') {
+    renderV2Review();
+  } else {
+    renderLegacyReview();
+  }
+}
+
+function renderLegacyReview() {
   const list = $('dataReviewList');
   const count = $('reviewCount');
   const pagination = $('reviewPagination');
@@ -339,8 +440,8 @@ function renderDataReview() {
     pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
     const prevButton = $('reviewPrevPage');
     const nextButton = $('reviewNextPage');
-    if (prevButton) prevButton.addEventListener('click', () => loadArchive(reviewPage - 1));
-    if (nextButton) nextButton.addEventListener('click', () => loadArchive(reviewPage + 1));
+    if (prevButton) prevButton.addEventListener('click', () => loadReviewData(reviewPage - 1));
+    if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
   }
 
   list.innerHTML = bluesky.posts.map((post) => `
@@ -365,6 +466,99 @@ function renderDataReview() {
   `).join('');
 }
 
+/** Curated columns for V2, per plan: Published, Score, Sentiment, Tools
+ * mentioned, Topics, Confidence, Provider, Processed At -- everything else
+ * (raw sentiment_score, emotions, ai_tooling_stance, rationale, deployment,
+ * model, prompt_version) lives in a per-row details expander. */
+function renderV2Review() {
+  const list = $('dataReviewList');
+  const count = $('reviewCount');
+  const pagination = $('reviewPagination');
+  const COLSPAN = 13;
+
+  if (blueskyV2.isLoading) {
+    list.innerHTML = `<tr><td colspan="${COLSPAN}" class="empty">Loading persisted V2 sentiment analysis from Supabase...</td></tr>`;
+    count.textContent = 'Loading...';
+    if (pagination) pagination.innerHTML = '';
+    return;
+  }
+
+  if (blueskyV2.error) {
+    list.innerHTML = `<tr><td colspan="${COLSPAN}" class="empty error"><strong>⚠️ ${escapeHtml(blueskyV2.error)}</strong><br><small>Check that: (1) the analyse-posts cron has run, (2) completed_post_analyses_v2 view exists and is granted to anon</small></td></tr>`;
+    count.textContent = 'Error';
+    if (pagination) pagination.innerHTML = '';
+    return;
+  }
+
+  if (!blueskyV2.posts.length) {
+    list.innerHTML = `<tr><td colspan="${COLSPAN}" class="empty">No completed V2 analyses available yet.</td></tr>`;
+    count.textContent = 'No data';
+    if (pagination) pagination.innerHTML = '';
+    return;
+  }
+
+  const totalCount = blueskyV2.totalCount || blueskyV2.posts.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
+  const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
+  const lastRow = firstRow + blueskyV2.posts.length - 1;
+
+  count.textContent = `${number.format(totalCount)} V2 analyzed posts`;
+  if (pagination) {
+    pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
+    const prevButton = $('reviewPrevPage');
+    const nextButton = $('reviewNextPage');
+    if (prevButton) prevButton.addEventListener('click', () => loadReviewData(reviewPage - 1));
+    if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
+  }
+
+  list.innerHTML = blueskyV2.posts.map((post) => {
+    const topicNames = post.topics.map((item) => typeof item === 'string' ? item : item.name).filter(Boolean);
+    const rows = [`
+    <tr>
+      <td>${escapeHtml(post.timestamp)}</td>
+      <td>@${escapeHtml(post.author)}</td>
+      <td>${escapeHtml(post.originalLanguage || 'Unknown')}</td>
+      <td class="post-text">${escapeHtml(post.text)}</td>
+      <td><span class="sentiment-score" style="background: ${scoreColor(post.displayScore)}">${post.displayScore}%</span></td>
+      <td><small>${escapeHtml(post.sentiment)}</small></td>
+      <td>${post.toolsMentioned.length > 0 ? escapeHtml(post.toolsMentioned.join(', ')) : 'N/A'}</td>
+      <td>${topicNames.length > 0 ? escapeHtml(topicNames.join(', ')) : 'N/A'}</td>
+      <td><small>${(post.confidence * 100).toFixed(0)}%</small></td>
+      <td><small>${escapeHtml(post.provider)}</small></td>
+      <td>${escapeHtml(post.processedTimestamp)}</td>
+      <td><button type="button" class="review-details-toggle" data-uri="${escapeHtml(post.uri)}">${expandedReviewRow === post.uri ? 'Hide' : 'View'}</button></td>
+      <td><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
+    </tr>`];
+
+    if (expandedReviewRow === post.uri) {
+      rows.push(`
+    <tr class="review-details-row">
+      <td colspan="${COLSPAN}">
+        <div class="review-details-card">
+          <div><b>Raw sentiment_score</b><span>${post.sentimentScore ?? 'N/A'}</span></div>
+          <div><b>Confidence</b><span>${(post.confidence * 100).toFixed(0)}%</span></div>
+          <div><b>Emotions</b><span>${post.emotions.length ? escapeHtml(post.emotions.join(', ')) : 'N/A'}</span></div>
+          <div><b>AI tooling stance</b><span>${escapeHtml(aiStanceLabel(post.aiStance))}</span></div>
+          <div><b>Deployment</b><span>${escapeHtml(post.deployment)}</span></div>
+          <div><b>Model</b><span>${escapeHtml(post.model)}</span></div>
+          <div><b>Prompt version</b><span>${escapeHtml(post.promptVersion)}</span></div>
+          <div class="review-details-rationale"><b>Rationale</b><span>${escapeHtml(post.rationale)}</span></div>
+        </div>
+      </td>
+    </tr>`);
+    }
+    return rows.join('');
+  }).join('');
+
+  list.querySelectorAll('.review-details-toggle').forEach((button) => {
+    button.addEventListener('click', () => {
+      const uri = button.dataset.uri;
+      expandedReviewRow = expandedReviewRow === uri ? null : uri;
+      renderV2Review();
+    });
+  });
+}
+
 function setActiveView(view) {
   activeView = view;
   $('dashboardView').hidden = view !== 'dashboard';
@@ -374,7 +568,13 @@ function setActiveView(view) {
     tab.classList.toggle('active', isActive);
     tab.setAttribute('aria-selected', String(isActive));
   });
-  if (view === 'data-review') renderDataReview();
+  if (view === 'data-review') {
+    if (reviewSource === 'v2' && !blueskyV2.posts.length && !blueskyV2.isLoading && !blueskyV2.error) {
+      loadArchiveV2(1);
+    } else {
+      renderDataReview();
+    }
+  }
 }
 
 function renderBlueskyStatus() {
@@ -429,7 +629,14 @@ document.getElementById('resetFilters')?.addEventListener('click', () => {
   renderDashboard(selectedData());
 });
 
-document.getElementById('refreshBluesky')?.addEventListener('click', () => loadArchive(reviewPage));
+document.getElementById('refreshBluesky')?.addEventListener('click', () => loadReviewData(reviewPage));
+
+document.getElementById('reviewSource')?.addEventListener('change', (event) => {
+  reviewSource = event.target.value;
+  reviewPage = 1;
+  expandedReviewRow = null;
+  loadReviewData(1);
+});
 
 document.getElementById('emotionList')?.addEventListener('click', (event) => {
   const button = event.target.closest('.emotion-row');
@@ -463,8 +670,13 @@ async function init() {
   $('topicFilter').innerHTML = '<option value="all">All topics</option>' + topicOptions.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
   renderDashboard(archiveData);
   
-  // Refresh archive periodically (reload current page)
-  setInterval(() => loadArchive(reviewPage), ARCHIVE_REFRESH_MS);
+  // Refresh archive periodically (reload current page). The dashboard
+  // aggregation always uses the legacy source; the Data review tab additionally
+  // refreshes the V2 source if that's the one currently toggled on.
+  setInterval(() => {
+    loadArchive(reviewSource === 'legacy' ? reviewPage : 1);
+    if (reviewSource === 'v2') loadArchiveV2(reviewPage);
+  }, ARCHIVE_REFRESH_MS);
 }
 
 // Start application
