@@ -537,7 +537,7 @@ function renderV2Review() {
         <div class="review-details-card">
           <div><b>Raw sentiment_score</b><span>${post.sentimentScore ?? 'N/A'}</span></div>
           <div><b>Confidence</b><span>${(post.confidence * 100).toFixed(0)}%</span></div>
-          <div><b>Emotions</b><span>${post.emotions.length ? escapeHtml(post.emotions.join(', ')) : 'N/A'}</span></div>
+          <div><b>Emotions</b><span>${post.emotions.length ? escapeHtml(post.emotions.map((e) => typeof e === 'string' ? e : `${e.name} (${Math.round((e.intensity || 0) * 100)}%)`).join(', ')) : 'N/A'}</span></div>
           <div><b>AI tooling stance</b><span>${escapeHtml(aiStanceLabel(post.aiStance))}</span></div>
           <div><b>Deployment</b><span>${escapeHtml(post.deployment)}</span></div>
           <div><b>Model</b><span>${escapeHtml(post.model)}</span></div>
