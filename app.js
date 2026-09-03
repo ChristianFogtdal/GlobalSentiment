@@ -1,4 +1,6 @@
-const state = { time: '24h', emotion: 'all', topic: 'all', sort: 'impact' };
+// Default to a 7-day window: V2 (Foundry) has a much smaller volume than the
+// legacy archive did, so a 24h window can easily show zero posts.
+const state = { time: '7d', emotion: 'all', topic: 'all', sort: 'impact' };
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
@@ -688,7 +690,7 @@ document.getElementById('sortTopics')?.addEventListener('change', (event) => {
 });
 
 document.getElementById('resetFilters')?.addEventListener('click', () => {
-  state.time = '24h';
+  state.time = '7d';
   state.emotion = 'all';
   state.topic = 'all';
   $('timeFilter').value = state.time;
