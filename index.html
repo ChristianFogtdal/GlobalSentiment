@@ -12,16 +12,25 @@
   </head>
   <body>
     <main class="app-shell">
-      <header class="topbar">
-        <a class="brand" href="#top" aria-label="Global Mood Intelligence home"><span class="brand-mark">G</span><span class="brand-name">Global Mood <b>Intelligence</b></span></a>
-       <div class="header-actions"><nav class="view-tabs" aria-label="Application views"><button class="view-tab active" data-view="dashboard" type="button" aria-selected="true">Dashboard</button><button class="view-tab" data-view="data-review" type="button" aria-selected="false">Data review</button></nav><div class="status"><span class="pulse" aria-hidden="true"></span><span class="status-text">Live archive</span> <span id="updatedAt"></span></div></div>
-      </header>
+      <section class="landing" id="top">
+        <h1 class="landing-title">The World's AI Pulse</h1>
+        <p class="landing-subtitle">Monitor real-time sentiment, emerging topics, and global reactions across AI conversations.</p>
+        <nav class="view-tabs" aria-label="Application views"><button class="view-tab active" data-view="dashboard" type="button" aria-selected="true">Dashboard</button><button class="view-tab" data-view="data-review" type="button" aria-selected="false">Data review</button></nav>
+        <figure class="landing-example">
+          <blockquote class="landing-quote">&ldquo;So many bad ideas. So little time. Disasters await.&rdquo;</blockquote>
+          <p class="landing-author">@stevenwoods.com</p>
+          <figcaption class="landing-analysis">
+            <span>13% Negative</span>
+            <span>Reliability, Risk</span>
+            <span>86% Confidence</span>
+          </figcaption>
+        </figure>
+      </section>
 
       <section id="dashboardView">
-      <section class="masthead section-animate" id="top">
+      <section class="masthead section-animate">
         <div>
           <p class="eyebrow">Public conversation, aggregated</p>
-          <h1>What is moving the world's mood?</h1>
           <div class="hero-mood" aria-label="Live overall mood">
             <div class="live-indicator"><span class="badge badge-live">Live</span></div>
             <div class="hero-score"><strong id="moodScore">--</strong><span>/100</span></div>
