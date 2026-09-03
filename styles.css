@@ -8,7 +8,25 @@ button { cursor: pointer; }
 .eyebrow, .metric p, .score-block p, .trend p, .map-note, .caveat { color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .topics-panel, .sources-panel { min-height: 300px; }.topic-heading { align-items: flex-end; }.sort-label { width: 122px; }.topic-table-wrap { overflow-x: auto; margin-top: 20px; }.topics-toggle-wrap { margin-top: 12px; }.show-more-toggle { padding: 7px 10px; border: 1px solid #cdd5cd; border-radius: 3px; color: var(--teal); background: transparent; font-size: 11px; font-weight: 800; cursor: pointer; }.show-more-toggle:hover { background: #f1f8f4; border-color: var(--teal); }.review-table-wrap { overflow: auto; max-height: calc(100vh - 320px); margin-top: 20px; border: 1px solid #e3e3dc; }.review-table-wrap table { width: 100%; }.review-table-wrap thead th { position: sticky; top: 0; background: #fff; z-index: 1; }.review-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; margin-top: 14px; font-size: 12px; color: var(--muted); }.review-pagination button { padding: 6px 14px; border: 1px solid #d6d6cf; border-radius: 6px; background: #fff; cursor: pointer; font-size: 12px; }.review-pagination button:disabled { opacity: .4; cursor: not-allowed; }table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }th { padding: 0 8px 9px; color: var(--muted); font-size: 10px; letter-spacing: .07em; text-transform: uppercase; }td { padding: 11px 8px; border-top: 1px solid #e3e3dc; white-space: nowrap; }td:first-child { padding-left: 0; white-space: normal; }td:last-child { padding-right: 0; }td b, td span { display: block; }td span { margin-top: 3px; color: var(--muted); font-size: 10px; }.topic-row { cursor: pointer; }.topic-row:hover td, .topic-row.selected td { background: #edf5f0; }.score-dot { display: inline-block; width: 7px; height: 7px; margin: 0 5px 0 0; border-radius: 50%; }.low-sample { color: var(--gold) !important; font-style: italic; }.empty { color: var(--muted); text-align: center; }
 .sentiment-score.positive { box-shadow: 0 0 0 1px #17614d33; }.sentiment-score.mixed { box-shadow: 0 0 0 1px #d3aa4533; }.sentiment-score.negative { box-shadow: 0 0 0 1px #8d382d33; }
-.data-review-view { padding-top: 46px; }.review-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 24px; }.review-heading h1 { margin: 0; font-size: 38px; }.review-heading-side { display: flex; align-items: center; gap: 14px; }.lede { margin: 8px 0 0; max-width: 62ch; color: var(--muted); font-size: 15px; line-height: 1.55; }.source-count { padding: 5px 10px; border: 1px solid #d6d6cf; border-radius: 999px; color: var(--muted); font-size: 11px; letter-spacing: .04em; white-space: nowrap; }.review-source-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }.review-source-toggle select { padding: 5px 8px; border: 1px solid #d6d6cf; border-radius: 4px; background: #fff; font-size: 12px; font-family: inherit; }.review-panel { padding: 10px 22px; }.post-text { min-width: 360px; white-space: normal; line-height: 1.5; }.rule-evidence { min-width: 180px; white-space: normal; color: var(--muted); font-size: 10px; line-height: 1.45; }.post-link { color: var(--teal); font-weight: 800; white-space: nowrap; }.review-details-toggle { padding: 4px 10px; border: 1px solid #bed6d0; border-radius: 4px; background: #f1f8f4; color: var(--ink); font-size: 11px; cursor: pointer; }.review-details-row td { white-space: normal; background: #f8f8f4; }.review-details-card { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 20px; padding: 14px 4px; }.review-details-card div b { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }.review-details-card div span { display: block; font-size: 12px; line-height: 1.5; }.review-details-rationale { grid-column: 1 / -1; }
+.data-review-view { padding-top: 46px; }.review-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 24px; }.review-heading h1 { margin: 0; font-size: 38px; }.review-heading-side { display: flex; align-items: center; gap: 14px; }.lede { margin: 8px 0 0; max-width: 62ch; color: var(--muted); font-size: 15px; line-height: 1.55; }.source-count { padding: 5px 10px; border: 1px solid #d6d6cf; border-radius: 999px; color: var(--muted); font-size: 11px; letter-spacing: .04em; white-space: nowrap; }.review-source-toggle { display: flex; align-items: center; gap: 6px; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }.review-source-toggle select { padding: 5px 8px; border: 1px solid #d6d6cf; border-radius: 4px; background: #fff; font-size: 12px; font-family: inherit; }.review-panel { padding: 10px 22px; }.post-link { color: var(--teal); font-weight: 800; white-space: nowrap; }.review-details-toggle { padding: 4px 10px; border: 1px solid #bed6d0; border-radius: 4px; background: #f1f8f4; color: var(--ink); font-size: 11px; cursor: pointer; }
+/* Data review feed: a conversation-first reading surface. Each record is a
+   full-width article separated by a thin rule, not a table row. */
+.review-search { display: flex; align-items: center; gap: 12px; padding: 4px 4px 18px; border-bottom: 1px solid #e3e3dc; }
+.review-search-input { flex: 1; min-width: 0; padding: 9px 12px; border: 1px solid #d6d6cf; border-radius: 6px; background: #fff; font-family: inherit; font-size: 13px; color: var(--ink); }
+.review-search-input::placeholder { color: var(--muted); }
+.review-search-status { color: var(--muted); font-size: 11px; white-space: nowrap; }
+.review-feed { display: flex; flex-direction: column; }
+.feed-item { padding: 22px 4px; border-top: 1px solid #e3e3dc; }
+.feed-item:first-child { border-top: 0; }
+.feed-meta { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-family: 'DM Mono', monospace; font-size: 11px; letter-spacing: .02em; color: var(--muted); }
+.feed-dot { opacity: .6; }
+.feed-text { max-width: 68ch; margin: 0 0 14px; font-size: 15px; line-height: 1.6; color: var(--ink); }
+.feed-analysis { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+.feed-sentiment-label { font-weight: 700; color: var(--ink); }
+.feed-topics, .feed-tools { position: relative; padding-left: 12px; }
+.feed-topics::before, .feed-tools::before { content: '·'; position: absolute; left: 0; }
+.feed-actions { display: flex; align-items: center; gap: 14px; }
+.review-details-row td { white-space: normal; background: #f8f8f4; }.review-details-card { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px 20px; padding: 16px 4px 4px; margin-top: 14px; border-top: 1px dashed #e3e3dc; }.review-details-card div b { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }.review-details-card div span { display: block; font-size: 12px; line-height: 1.5; }.review-details-rationale { grid-column: 1 / -1; }
 
 /* Premium dashboard theme overrides */
 :root {
@@ -24,6 +42,12 @@ body { background: var(--bg-primary); line-height: 1.6; }
 .app-shell { max-width: 1680px; }
 .view-tab:hover, .view-tab.active { color: var(--text-primary); }.bluesky-refresh { background: var(--accent-primary); }.view-tab.active { border-color: var(--accent-primary); }
 .review-source-toggle select { border-color: var(--border-normal); color: var(--text-primary); background: var(--bg-tertiary); }
+.review-search { border-color: var(--border-subtle); }
+.review-search-input { border-color: var(--border-normal); color: var(--text-primary); background: var(--bg-tertiary); }
+.feed-item { border-color: var(--border-subtle); }
+.feed-text { color: var(--text-primary); }
+.feed-sentiment-label { color: var(--text-primary); }
+.review-details-card { border-color: var(--border-subtle); }
 .lede { color: var(--text-secondary); }
 .source-count { border-color: var(--border-subtle); color: var(--text-secondary); background: var(--bg-tertiary); }
 .panel { padding: clamp(24px, 3vw, 40px); border-color: var(--border-normal); background: var(--bg-secondary); }.review-details-toggle { border-color: var(--border-normal); color: var(--text-primary); background: var(--bg-tertiary); }
@@ -114,17 +138,12 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
   .review-heading h1 { font-size: 26px; }
   .review-source-toggle { width: 100%; }
 
-  /* Responsive Data review: turn the dense table into a stacked card list
-     instead of forcing horizontal scrolling on narrow screens. */
-  .review-table-wrap { max-height: none; border: 0; }
-  .review-table-wrap table, .review-table-wrap thead, .review-table-wrap tbody { display: block; width: 100%; }
-  .review-table-wrap thead { position: absolute; top: -9999px; left: -9999px; }
-  .review-table-wrap tr { display: block; margin-bottom: 14px; padding: 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
-  .review-table-wrap tr.review-details-row { border-top: 0; margin-top: -14px; }
-  .review-table-wrap td { display: grid; grid-template-columns: 100px 1fr; gap: 10px; padding: 6px 0; border-top: 0; white-space: normal; text-align: left; }
-  .review-table-wrap td::before { content: attr(data-label); color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
-  .review-table-wrap td.post-text, .review-table-wrap td.rationale { grid-template-columns: 1fr; }
-  .review-table-wrap td.post-text::before, .review-table-wrap td.rationale::before { margin-bottom: 2px; }
+  /* Responsive Data review feed: keep the same reading order and inline
+     analysis disclosure on narrow screens; no table-to-card reformatting. */
+  .review-search { flex-direction: column; align-items: stretch; gap: 8px; }
+  .review-search-status { text-align: right; }
+  .feed-item { padding: 18px 0; }
+  .feed-actions { flex-wrap: wrap; gap: 10px 16px; }
 }
 
 @media (max-width: 680px) {

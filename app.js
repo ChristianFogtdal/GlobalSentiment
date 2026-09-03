@@ -14,7 +14,8 @@ const dashboardV2 = { allPosts: [], isLoading: false, error: '', totalCount: 0, 
 const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
 let reviewSource = 'legacy'; // 'legacy' | 'v2'
-let expandedReviewRow = null; // post_uri of the row whose details expander is open (V2 only)
+let expandedReviewRow = null; // post_uri of the record whose analysis details are open
+let reviewSearchTerm = ''; // client-side search, scoped to the currently loaded page
 let activeView = 'dashboard';
 
 // Utility functions
@@ -799,171 +800,178 @@ function populateTrendTopics(topics) {
   }
 }
 
-function renderDataReview() {
-  const head = $('dataReviewHead');
-  if (head) {
-    head.innerHTML = reviewSource === 'v2'
-      ? '<tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Score (0-100)</th><th>Sentiment</th><th>Tools mentioned</th><th>Topics</th><th>Confidence</th><th>Provider</th><th>Processed (UTC)</th><th>Details</th><th>Verification</th></tr>'
-      : '<tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Sentiment (0-100)</th><th>Confidence</th><th>Emotions</th><th>Topics</th><th>AI stance</th><th>Rationale</th><th>Verification</th></tr>';
-  }
-  if (reviewSource === 'v2') {
-    renderV2Review();
-  } else {
-    renderLegacyReview();
-  }
-}
-
-function renderLegacyReview() {
-  const list = $('dataReviewList');
-  const count = $('reviewCount');
-  const pagination = $('reviewPagination');
-
-  if (bluesky.isLoading) {
-    list.innerHTML = `<tr><td colspan="11" class="empty">Loading persisted sentiment analysis from Supabase...</td></tr>`;
-    count.textContent = 'Loading...';
-    if (pagination) pagination.innerHTML = '';
-    return;
-  }
-  
-  if (bluesky.error) {
-    list.innerHTML = `<tr><td colspan="11" class="empty error"><strong>⚠️ ${escapeHtml(bluesky.error)}</strong><br><small>Check that: (1) Ingestion function has run, (2) LLM analysis is complete, (3) Supabase completed_post_analyses view exists</small></td></tr>`;
-    count.textContent = 'Error';
-    if (pagination) pagination.innerHTML = '';
-    return;
-  }
-  
-  if (!bluesky.posts.length) {
-    list.innerHTML = `<tr><td colspan="11" class="empty">No analyzed posts available yet. The archive will populate when analysis completes.</td></tr>`;
-    count.textContent = 'No data';
-    if (pagination) pagination.innerHTML = '';
-    return;
-  }
-  
-  const totalCount = bluesky.totalCount || bluesky.posts.length;
-  const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
-  const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
-  const lastRow = firstRow + bluesky.posts.length - 1;
-
-  count.textContent = `${number.format(totalCount)} archived posts`;
-  if (pagination) {
-    pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
-    const prevButton = $('reviewPrevPage');
-    const nextButton = $('reviewNextPage');
-    if (prevButton) prevButton.addEventListener('click', () => loadReviewData(reviewPage - 1));
-    if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
-  }
-
-  list.innerHTML = bluesky.posts.map((post) => `
-    <tr>
-      <td data-label="Published (UTC)">${escapeHtml(post.timestamp)}</td>
-      <td data-label="Author">@${escapeHtml(post.author)}</td>
-      <td data-label="Language">${escapeHtml(post.originalLanguage || 'Unknown')}</td>
-      <td class="post-text" data-label="Post text">${escapeHtml(post.text)}</td>
-      <td data-label="Sentiment (0-100)">
-        <span class="sentiment-score ${sentimentClass(post.score)}" style="background: ${scoreColor(post.score)}">${post.score}%</span>
-        <br><small>${escapeHtml(post.sentiment)}</small>
-      </td>
-      <td data-label="Confidence"><small>${(post.confidence * 100).toFixed(0)}%</small></td>
-      <td data-label="Emotions" title="${post.emotions.map(e => `${humanizeLabel(e.label)} (${(e.confidence * 100).toFixed(0)}%)`).join(', ')}">
-        ${post.emotions.length > 0 ? post.emotions.slice(0, 2).map(e => escapeHtml(humanizeLabel(e.label))).join(', ') : 'N/A'}
-      </td>
-      <td data-label="Topics">${post.topics.length > 0 ? escapeHtml(post.topics.map(humanizeLabel).join(', ')) : 'N/A'}</td>
-      <td data-label="AI stance">${escapeHtml(aiStanceLabel(post.ai_stance))}</td>
-      <td class="rationale" data-label="Rationale" title="${escapeHtml(post.rationale)}"><small>${escapeHtml(post.rationale.substring(0, 40))}${post.rationale.length > 40 ? '...' : ''}</small></td>
-      <td data-label="Verification"><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
-    </tr>
-  `).join('');
-}
-
-/** Curated columns for V2, per plan: Published, Score, Sentiment, Tools
- * mentioned, Topics, Confidence, Provider, Processed At -- everything else
- * (raw sentiment_score, emotions, ai_tooling_stance, rationale, deployment,
- * model, prompt_version) lives in a per-row details expander. */
-function renderV2Review() {
-  const list = $('dataReviewList');
-  const count = $('reviewCount');
-  const pagination = $('reviewPagination');
-  const COLSPAN = 13;
-
-  if (blueskyV2.isLoading) {
-    list.innerHTML = `<tr><td colspan="${COLSPAN}" class="empty">Loading persisted V2 sentiment analysis from Supabase...</td></tr>`;
-    count.textContent = 'Loading...';
-    if (pagination) pagination.innerHTML = '';
-    return;
-  }
-
-  if (blueskyV2.error) {
-    list.innerHTML = `<tr><td colspan="${COLSPAN}" class="empty error"><strong>⚠️ ${escapeHtml(blueskyV2.error)}</strong><br><small>Check that: (1) the analyse-posts cron has run, (2) completed_post_analyses_v2 view exists and is granted to anon</small></td></tr>`;
-    count.textContent = 'Error';
-    if (pagination) pagination.innerHTML = '';
-    return;
-  }
-
-  if (!blueskyV2.posts.length) {
-    list.innerHTML = `<tr><td colspan="${COLSPAN}" class="empty">No completed V2 analyses available yet.</td></tr>`;
-    count.textContent = 'No data';
-    if (pagination) pagination.innerHTML = '';
-    return;
-  }
-
-  const totalCount = blueskyV2.totalCount || blueskyV2.posts.length;
-  const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
-  const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
-  const lastRow = firstRow + blueskyV2.posts.length - 1;
-
-  count.textContent = `${number.format(totalCount)} V2 analyzed posts`;
-  if (pagination) {
-    pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Rows ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
-    const prevButton = $('reviewPrevPage');
-    const nextButton = $('reviewNextPage');
-    if (prevButton) prevButton.addEventListener('click', () => loadReviewData(reviewPage - 1));
-    if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
-  }
-
-  list.innerHTML = blueskyV2.posts.map((post) => {
+/** Normalize a legacy or V2 archive post into a source-neutral feed record.
+ * Primary fields drive the collapsed feed item; provenance fields are only
+ * ever shown inside the inline "Analysis details" expansion. */
+function toFeedRecord(post, source) {
+  if (source === 'v2') {
     const topicNames = post.topics.map((item) => typeof item === 'string' ? item : item.name).filter(Boolean).map(humanizeLabel);
-    const rows = [`
-    <tr>
-      <td data-label="Published (UTC)">${escapeHtml(post.timestamp)}</td>
-      <td data-label="Author">@${escapeHtml(post.author)}</td>
-      <td data-label="Language">${escapeHtml(post.originalLanguage || 'Unknown')}</td>
-      <td class="post-text" data-label="Post text">${escapeHtml(post.text)}</td>
-      <td data-label="Score (0-100)"><span class="sentiment-score ${sentimentClass(post.displayScore)}" style="background: ${scoreColor(post.displayScore)}">${post.displayScore}%</span></td>
-      <td data-label="Sentiment"><small>${escapeHtml(humanizeLabel(post.sentiment))}</small></td>
-      <td data-label="Tools mentioned">${post.toolsMentioned.length > 0 ? escapeHtml(post.toolsMentioned.join(', ')) : 'N/A'}</td>
-      <td data-label="Topics">${topicNames.length > 0 ? escapeHtml(topicNames.join(', ')) : 'N/A'}</td>
-      <td data-label="Confidence"><small>${(post.confidence * 100).toFixed(0)}%</small></td>
-      <td data-label="Provider"><small>${escapeHtml(post.provider)}</small></td>
-      <td data-label="Processed (UTC)">${escapeHtml(post.processedTimestamp)}</td>
-      <td data-label="Details"><button type="button" class="review-details-toggle" data-uri="${escapeHtml(post.uri)}">${expandedReviewRow === post.uri ? 'Hide' : 'View'}</button></td>
-      <td data-label="Verification"><a class="post-link" href="${escapeHtml(post.url)}" target="_blank" rel="noopener noreferrer">Open</a></td>
-    </tr>`];
+    const emotionNames = post.emotions.map((e) => typeof e === 'string' ? humanizeLabel(e) : `${humanizeLabel(e.name)} (${Math.round((e.intensity || 0) * 100)}%)`);
+    return {
+      uri: post.uri,
+      source: 'v2',
+      author: post.author,
+      language: post.originalLanguage || 'unknown',
+      timestamp: post.timestamp,
+      text: post.text,
+      score: post.displayScore,
+      sentimentLabel: humanizeLabel(post.sentiment),
+      topics: topicNames,
+      confidence: post.confidence,
+      toolsMentioned: post.toolsMentioned,
+      url: post.url,
+      searchHaystack: `${post.text} ${post.author} ${topicNames.join(' ')}`.toLowerCase(),
+      provenance: {
+        rawScore: post.sentimentScore ?? 'N/A',
+        emotions: emotionNames.length ? emotionNames.join(', ') : 'N/A',
+        aiStance: aiStanceLabel(post.aiStance),
+        provider: post.provider,
+        processedTimestamp: post.processedTimestamp,
+        deployment: post.deployment,
+        model: post.model,
+        promptVersion: post.promptVersion,
+        rationale: post.rationale,
+      },
+    };
+  }
+  return {
+    uri: post.uri,
+    source: 'legacy',
+    author: post.author,
+    language: post.originalLanguage || 'unknown',
+    timestamp: post.timestamp,
+    text: post.text,
+    score: post.score,
+    sentimentLabel: post.sentiment,
+    topics: post.topics.map(humanizeLabel),
+    confidence: post.confidence,
+    toolsMentioned: [],
+    url: post.url,
+    searchHaystack: `${post.text} ${post.author} ${post.topics.join(' ')}`.toLowerCase(),
+    provenance: {
+      emotions: post.emotions.length ? post.emotions.map((e) => `${humanizeLabel(e.label)} (${(e.confidence * 100).toFixed(0)}%)`).join(', ') : 'N/A',
+      aiStance: aiStanceLabel(post.ai_stance),
+      rationale: post.rationale,
+    },
+  };
+}
 
-    if (expandedReviewRow === post.uri) {
-      rows.push(`
-    <tr class="review-details-row">
-      <td colspan="${COLSPAN}">
-        <div class="review-details-card">
-          <div><b>Raw sentiment_score</b><span>${post.sentimentScore ?? 'N/A'}</span></div>
-          <div><b>Confidence</b><span>${(post.confidence * 100).toFixed(0)}%</span></div>
-          <div><b>Emotions</b><span>${post.emotions.length ? escapeHtml(post.emotions.map((e) => typeof e === 'string' ? humanizeLabel(e) : `${humanizeLabel(e.name)} (${Math.round((e.intensity || 0) * 100)}%)`).join(', ')) : 'N/A'}</span></div>
-          <div><b>AI tooling stance</b><span>${escapeHtml(aiStanceLabel(post.aiStance))}</span></div>
-          <div><b>Deployment</b><span>${escapeHtml(post.deployment)}</span></div>
-          <div><b>Model</b><span>${escapeHtml(post.model)}</span></div>
-          <div><b>Prompt version</b><span>${escapeHtml(post.promptVersion)}</span></div>
-          <div class="review-details-rationale"><b>Rationale</b><span>${escapeHtml(post.rationale)}</span></div>
-        </div>
-      </td>
-    </tr>`);
-    }
-    return rows.join('');
+function renderDataReview() {
+  if (reviewSource === 'v2') {
+    renderFeed(blueskyV2, 'v2', 'V2 analyzed posts', 'No completed V2 analyses available yet.', 'Loading persisted V2 sentiment analysis from Supabase...');
+  } else {
+    renderFeed(bluesky, 'legacy', 'archived posts', 'No analyzed posts available yet. The archive will populate when analysis completes.', 'Loading persisted sentiment analysis from Supabase...');
+  }
+}
+
+/** Shared conversation-first feed renderer for both archive sources. Search
+ * is client-side and scoped only to the currently loaded page of records. */
+function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessage) {
+  const list = $('dataReviewList');
+  const count = $('reviewCount');
+  const pagination = $('reviewPagination');
+  const searchStatus = $('reviewSearchStatus');
+
+  if (archiveState.isLoading) {
+    list.innerHTML = `<p class="empty">${escapeHtml(loadingMessage)}</p>`;
+    count.textContent = 'Loading...';
+    if (pagination) pagination.innerHTML = '';
+    if (searchStatus) searchStatus.textContent = '';
+    return;
+  }
+
+  if (archiveState.error) {
+    list.innerHTML = `<p class="empty error"><strong>⚠️ ${escapeHtml(archiveState.error)}</strong></p>`;
+    count.textContent = 'Error';
+    if (pagination) pagination.innerHTML = '';
+    if (searchStatus) searchStatus.textContent = '';
+    return;
+  }
+
+  if (!archiveState.posts.length) {
+    list.innerHTML = `<p class="empty">${escapeHtml(emptyMessage)}</p>`;
+    count.textContent = 'No data';
+    if (pagination) pagination.innerHTML = '';
+    if (searchStatus) searchStatus.textContent = '';
+    return;
+  }
+
+  const totalCount = archiveState.totalCount || archiveState.posts.length;
+  const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
+  const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
+  const lastRow = firstRow + archiveState.posts.length - 1;
+
+  count.textContent = `${number.format(totalCount)} ${countLabel}`;
+  if (pagination) {
+    pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Showing ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
+    const prevButton = $('reviewPrevPage');
+    const nextButton = $('reviewNextPage');
+    if (prevButton) prevButton.addEventListener('click', () => loadReviewData(reviewPage - 1));
+    if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
+  }
+
+  const records = archiveState.posts.map((post) => toFeedRecord(post, source));
+  const term = reviewSearchTerm.trim().toLowerCase();
+  const matches = term ? records.filter((record) => record.searchHaystack.includes(term)) : records;
+
+  if (searchStatus) {
+    searchStatus.textContent = term ? `${number.format(matches.length)} match${matches.length === 1 ? '' : 'es'} on this page` : '';
+  }
+
+  if (term && !matches.length) {
+    list.innerHTML = `<p class="empty">No posts on this page match "${escapeHtml(reviewSearchTerm)}".</p>`;
+    return;
+  }
+
+  list.innerHTML = matches.map((record) => {
+    const isExpanded = expandedReviewRow === record.uri;
+    const provenanceRows = Object.entries({
+      ...(record.source === 'v2' ? { 'Raw score': record.provenance.rawScore } : {}),
+      Confidence: `${(record.confidence * 100).toFixed(0)}%`,
+      Emotions: record.provenance.emotions,
+      'AI stance': record.provenance.aiStance,
+      ...(record.source === 'v2' ? {
+        Provider: record.provenance.provider,
+        'Processed (UTC)': record.provenance.processedTimestamp,
+        Deployment: record.provenance.deployment,
+        Model: record.provenance.model,
+        'Prompt version': record.provenance.promptVersion,
+      } : {}),
+    }).map(([label, value]) => `<div><b>${escapeHtml(label)}</b><span>${escapeHtml(String(value))}</span></div>`).join('');
+
+    return `
+    <article class="feed-item">
+      <div class="feed-meta">
+        <span class="feed-author">@${escapeHtml(record.author)}</span>
+        <span class="feed-dot" aria-hidden="true">·</span>
+        <span class="feed-time">${escapeHtml(record.timestamp)}</span>
+        <span class="feed-dot" aria-hidden="true">·</span>
+        <span class="feed-lang">${escapeHtml(record.language)}</span>
+      </div>
+      <p class="feed-text">${escapeHtml(record.text)}</p>
+      <div class="feed-analysis">
+        <span class="sentiment-score ${sentimentClass(record.score)}" style="background: ${scoreColor(record.score)}">${record.score}%</span>
+        <span class="feed-sentiment-label">${escapeHtml(record.sentimentLabel)}</span>
+        ${record.topics.length ? `<span class="feed-topics">${escapeHtml(record.topics.join(', '))}</span>` : ''}
+        ${record.toolsMentioned.length ? `<span class="feed-tools">${escapeHtml(record.toolsMentioned.join(', '))}</span>` : ''}
+      </div>
+      <div class="feed-actions">
+        <button type="button" class="review-details-toggle" data-uri="${escapeHtml(record.uri)}">${isExpanded ? 'Hide analysis details' : 'Analysis details'}</button>
+        <a class="post-link" href="${escapeHtml(record.url)}" target="_blank" rel="noopener noreferrer">Open on Bluesky</a>
+      </div>
+      ${isExpanded ? `
+      <div class="review-details-card">
+        ${provenanceRows}
+        <div class="review-details-rationale"><b>Rationale</b><span>${escapeHtml(record.provenance.rationale)}</span></div>
+      </div>` : ''}
+    </article>`;
   }).join('');
 
   list.querySelectorAll('.review-details-toggle').forEach((button) => {
     button.addEventListener('click', () => {
       const uri = button.dataset.uri;
       expandedReviewRow = expandedReviewRow === uri ? null : uri;
-      renderV2Review();
+      renderDataReview();
     });
   });
 }
@@ -1025,7 +1033,22 @@ document.getElementById('reviewSource')?.addEventListener('change', (event) => {
   reviewSource = event.target.value;
   reviewPage = 1;
   expandedReviewRow = null;
+  reviewSearchTerm = '';
+  const searchInput = $('reviewSearch');
+  if (searchInput) searchInput.value = '';
   loadReviewData(1);
+});
+
+// Client-side search: scoped only to the currently loaded page of records.
+// Debounced with a short timer so typing stays responsive.
+let reviewSearchDebounce = null;
+document.getElementById('reviewSearch')?.addEventListener('input', (event) => {
+  const value = event.target.value;
+  window.clearTimeout(reviewSearchDebounce);
+  reviewSearchDebounce = window.setTimeout(() => {
+    reviewSearchTerm = value;
+    renderDataReview();
+  }, 120);
 });
 
 // Initial load

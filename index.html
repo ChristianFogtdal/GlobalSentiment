@@ -62,11 +62,12 @@
       <section class="data-review-view" id="dataReviewView" hidden>
         <div class="review-heading"><div><p class="eyebrow">Source verification</p><h1>Bluesky AI sentiment analysis</h1><p class="lede">Verify individual analyses against their original Bluesky posts.</p></div><div class="review-heading-side"><label class="review-source-toggle">Source<select id="reviewSource"><option value="legacy">Standard analysis</option><option value="v2">Latest model (Foundry)</option></select></label><span id="reviewCount" class="source-count">Loading archive</span></div></div>
         <div class="panel review-panel">
-          <div class="review-table-wrap"><table><thead id="dataReviewHead"><tr><th>Published (UTC)</th><th>Author</th><th>Language</th><th>Post text</th><th>Sentiment (0-100)</th><th>Confidence</th><th>Emotions</th><th>Topics</th><th>AI stance</th><th>Rationale</th><th>Verification</th></tr></thead><tbody id="dataReviewList"></tbody></table></div>
+          <div class="review-search"><input type="search" id="reviewSearch" class="review-search-input" placeholder="Search posts, authors, topics..." aria-label="Search loaded posts" /><span id="reviewSearchStatus" class="review-search-status" aria-live="polite"></span></div>
+          <div class="review-feed" id="dataReviewList"></div>
           <div id="reviewPagination" class="review-pagination"></div>
         </div>
       </section>
     </main>
-    <script src="app.js?v=planv2"></script>
+    <script src="app.js?v=feedv1"></script>
   </body>
 </html>
