@@ -16,6 +16,10 @@ let reviewPage = 1;
 let reviewSource = 'v2'; // 'legacy' | 'v2' -- Latest model (Foundry) is the default on open
 let expandedReviewRow = null; // post_uri of the record whose analysis details are open
 let reviewSearchTerm = ''; // server-side search term, applied across the full archive
+// Monotonically increasing request counters, used to discard stale/out-of-order
+// responses (e.g. an older keystroke's request resolving after a newer one),
+// which would otherwise overwrite the feed with results for a different search term.
+let reviewRequestSeq = { legacy: 0, v2: 0 };
 let activeView = 'dashboard';
 
 // Utility functions
@@ -323,6 +327,7 @@ async function requestArchive(path, options = {}) {
  * Queries completed_post_analyses view joined with bluesky_posts
  */
 async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
+  const requestId = ++reviewRequestSeq.legacy;
   try {
     bluesky.isLoading = true;
     renderBlueskyStatus();
@@ -349,6 +354,10 @@ async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
         },
       }
     );
+
+    // Discard this response if a newer request has since been issued (e.g. the
+    // user kept typing), so stale results can't overwrite the current search.
+    if (requestId !== reviewRequestSeq.legacy) return;
 
     bluesky.totalCount = totalCount;
 
@@ -388,13 +397,16 @@ async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
       bluesky.error = '';
     }
   } catch (error) {
+    if (requestId !== reviewRequestSeq.legacy) return;
     bluesky.error = `Failed to load archive: ${error.message}`;
     console.error('Archive load error:', error);
   } finally {
-    bluesky.isLoading = false;
-    renderBlueskyStatus();
-    renderDashboard(selectedData());
-    renderDataReview();
+    if (requestId === reviewRequestSeq.legacy) {
+      bluesky.isLoading = false;
+      renderBlueskyStatus();
+      renderDashboard(selectedData());
+      renderDataReview();
+    }
   }
 }
 
@@ -404,6 +416,7 @@ async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
  * the main Dashboard/map aggregation, which always uses the legacy source.
  */
 async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
+  const requestId = ++reviewRequestSeq.v2;
   try {
     blueskyV2.isLoading = true;
     renderDataReview();
@@ -428,6 +441,10 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
         },
       }
     );
+
+    // Discard this response if a newer request has since been issued (e.g. the
+    // user kept typing), so stale results can't overwrite the current search.
+    if (requestId !== reviewRequestSeq.v2) return;
 
     blueskyV2.totalCount = totalCount;
 
@@ -464,11 +481,14 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
       blueskyV2.error = '';
     }
   } catch (error) {
+    if (requestId !== reviewRequestSeq.v2) return;
     blueskyV2.error = `Failed to load V2 archive: ${error.message}`;
     console.error('V2 archive load error:', error);
   } finally {
-    blueskyV2.isLoading = false;
-    renderDataReview();
+    if (requestId === reviewRequestSeq.v2) {
+      blueskyV2.isLoading = false;
+      renderDataReview();
+    }
   }
 }
 
