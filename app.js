@@ -889,7 +889,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
     list.innerHTML = `<p class="empty error"><strong>⚠️ ${escapeHtml(archiveState.error)}</strong></p>`;
     count.textContent = 'Error';
     if (pagination) pagination.innerHTML = '';
-    if (searchStatus) searchStatus.textContent = '';
+    if (searchStatus) searchStatus.textContent = reviewSearchTerm.trim() ? '0 hits' : '';
     return;
   }
 
@@ -906,9 +906,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
   const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
   const lastRow = firstRow + archiveState.posts.length - 1;
 
-  count.textContent = reviewSearchTerm.trim()
-    ? `${number.format(totalCount)} match${totalCount === 1 ? '' : 'es'} for "${reviewSearchTerm.trim()}"`
-    : `${number.format(totalCount)} ${countLabel}`;
+  count.textContent = `${number.format(totalCount)} ${countLabel}`;
   if (pagination) {
     pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Showing ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
     const prevButton = $('reviewPrevPage');
@@ -917,7 +915,11 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
     if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
   }
 
-  if (searchStatus) searchStatus.textContent = '';
+  if (searchStatus) {
+    searchStatus.textContent = reviewSearchTerm.trim()
+      ? `${number.format(totalCount)} hit${totalCount === 1 ? '' : 's'}`
+      : '';
+  }
 
   const records = archiveState.posts.map((post) => toFeedRecord(post, source));
 
@@ -1043,6 +1045,8 @@ document.getElementById('reviewSource')?.addEventListener('change', (event) => {
 let reviewSearchDebounce = null;
 document.getElementById('reviewSearch')?.addEventListener('input', (event) => {
   const value = event.target.value;
+  const searchStatus = $('reviewSearchStatus');
+  if (searchStatus && value.trim()) searchStatus.textContent = 'Searching…';
   window.clearTimeout(reviewSearchDebounce);
   reviewSearchDebounce = window.setTimeout(() => {
     reviewSearchTerm = value;
