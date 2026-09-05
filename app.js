@@ -260,16 +260,17 @@ function trendSeries({ topic = 'all' } = {}) {
     buckets.set(key, entry);
   });
 
-  // The archive is front-loaded with backfill, so anchoring the axis to the
-  // full span would leave the line crushed against one edge. Start at the first
-  // bucket that begins a *sustained* run, so an isolated early reading cannot
-  // strand a dot behind a long gap or distort the period movement.
+  // The archive is front-loaded with a sparse bootstrap/backfill period, so
+  // anchoring the axis to the full span would leave the line crushed against
+  // one edge and make the early, thinly-sampled period look meaningful. The
+  // displayed range is hardcoded to start at the first bucket that captures
+  // meaningful, continuous data collection; earlier buckets are still present
+  // in the underlying data/aggregation, they are simply not displayed.
+  const CHART_START_MS = Date.UTC(2026, 8, 2, 9, 0, 0); // Sep 2, 09:00 UTC
+  const CHART_START_KEY = Math.floor(CHART_START_MS / HOUR_MS);
   const keys = [...buckets.keys()].sort((first, second) => first - second);
-  const isSolid = (key) => buckets.has(key) && buckets.get(key).count >= MIN_BUCKET_POSTS;
-  const sustained = keys.find((key) => isSolid(key) && isSolid(key + 1));
-  const anySolid = keys.find(isSolid);
-  const start = sustained !== undefined ? sustained : (anySolid === undefined ? keys[0] : anySolid);
-  const end = keys[keys.length - 1];
+  const start = CHART_START_KEY;
+  const end = keys.length ? keys[keys.length - 1] : start;
 
   const points = [];
   for (let key = start; key <= end; key += 1) {
