@@ -15,7 +15,7 @@ const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
 let reviewSource = 'v2'; // 'legacy' | 'v2' -- Latest model (Foundry) is the default on open
 let expandedReviewRow = null; // post_uri of the record whose analysis details are open
-let reviewSearchTerm = ''; // client-side search, scoped to the currently loaded page
+let reviewSearchTerm = ''; // server-side search term, applied across the full archive
 let activeView = 'dashboard';
 
 // Utility functions
@@ -285,6 +285,22 @@ function trendSeries({ topic = 'all' } = {}) {
   return { points, score, items };
 }
 
+/**
+ * Build a PostgREST `or=(...)` filter that matches a search term against
+ * post_text, author_handle, and topics (JSONB array of strings/objects),
+ * so search runs across the full archive at the database level instead of
+ * only the currently loaded page.
+ */
+function buildReviewSearchFilter(term) {
+  const trimmed = term.trim();
+  if (!trimmed) return '';
+  // Escape characters that are meaningful to PostgREST's filter syntax
+  // (comma, parentheses) since they would otherwise break the or=(...) list.
+  const escaped = trimmed.replace(/[,()]/g, '\\$&');
+  const likeValue = `*${escaped}*`;
+  return `or=(post_text.ilike.${likeValue},author_handle.ilike.${likeValue},topics.cs.["${escaped}"])`;
+}
+
 async function requestArchive(path, options = {}) {
   const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
@@ -306,7 +322,7 @@ async function requestArchive(path, options = {}) {
  * Load completed post analyses from Supabase
  * Queries completed_post_analyses view joined with bluesky_posts
  */
-async function loadArchive(page = reviewPage) {
+async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
   try {
     bluesky.isLoading = true;
     renderBlueskyStatus();
@@ -316,9 +332,16 @@ async function loadArchive(page = reviewPage) {
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
 
-    // Query completed_post_analyses view with exact count + range-based pagination
+    // Query completed_post_analyses view with exact count + range-based pagination.
+    // The search filter is applied at the database level (via PostgREST's
+    // or=(...) filter), so matches are found across the full archive rather
+    // than only the currently loaded page.
+    const searchFilter = buildReviewSearchFilter(searchTerm);
+    const query = searchFilter
+      ? `completed_post_analyses?order=created_at.desc&${searchFilter}`
+      : `completed_post_analyses?order=created_at.desc`;
     const { data: analyses, totalCount } = await requestArchive(
-      `completed_post_analyses?order=created_at.desc`,
+      query,
       {
         headers: {
           Prefer: 'count=exact',
@@ -330,7 +353,9 @@ async function loadArchive(page = reviewPage) {
     bluesky.totalCount = totalCount;
 
     if (!analyses || analyses.length === 0) {
-      bluesky.error = 'No completed analyses yet. Check back soon.';
+      bluesky.error = searchTerm.trim()
+        ? `No posts match "${searchTerm.trim()}".`
+        : 'No completed analyses yet. Check back soon.';
       bluesky.posts = [];
     } else {
       // For each analysis, we need to fetch the post details from bluesky_posts
@@ -360,29 +385,6 @@ async function loadArchive(page = reviewPage) {
         originalLanguage: analysis.original_language || 'unknown',
       }));
       bluesky.posts = mappedPosts;
-      if (page === 1) {
-        const allAnalyses = [];
-        const pageSize = 1000;
-        let offset = 0;
-        let archivePage;
-        do {
-          const result = await requestArchive(
-            `completed_post_analyses?order=created_at.desc&limit=${pageSize}&offset=${offset}`
-          );
-          archivePage = result.data;
-          if (Array.isArray(archivePage)) allAnalyses.push(...archivePage);
-          offset += archivePage?.length || 0;
-        } while (archivePage?.length === pageSize);
-        bluesky.allPosts = allAnalyses.map(analysis => ({
-          ...analysis,
-          score: Math.round((analysis.score || 0) * 100),
-          confidence: analysis.confidence || 0,
-          emotions: parseArray(analysis.emotions),
-          topics: parseArray(analysis.topics),
-          ai_stance: analysis.ai_tooling_stance || 'not_applicable',
-          publishedAt: analysis.published_at || analysis.created_at,
-        }));
-      }
       bluesky.error = '';
     }
   } catch (error) {
@@ -401,7 +403,7 @@ async function loadArchive(page = reviewPage) {
  * review tab only. Fully isolated from the legacy `bluesky` state and from
  * the main Dashboard/map aggregation, which always uses the legacy source.
  */
-async function loadArchiveV2(page = reviewPage) {
+async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
   try {
     blueskyV2.isLoading = true;
     renderDataReview();
@@ -411,8 +413,14 @@ async function loadArchiveV2(page = reviewPage) {
     const to = from + REVIEW_PAGE_SIZE - 1;
 
     // V2 default ordering: most recently analyzed first, for validation.
+    // The search filter is applied at the database level so matches are
+    // found across the full archive rather than only the loaded page.
+    const searchFilter = buildReviewSearchFilter(searchTerm);
+    const query = searchFilter
+      ? `completed_post_analyses_v2?order=processed_at.desc,published_at.desc&${searchFilter}`
+      : `completed_post_analyses_v2?order=processed_at.desc,published_at.desc`;
     const { data: analyses, totalCount } = await requestArchive(
-      `completed_post_analyses_v2?order=processed_at.desc,published_at.desc`,
+      query,
       {
         headers: {
           Prefer: 'count=exact',
@@ -424,7 +432,9 @@ async function loadArchiveV2(page = reviewPage) {
     blueskyV2.totalCount = totalCount;
 
     if (!analyses || analyses.length === 0) {
-      blueskyV2.error = 'No completed V2 analyses yet. Check back soon.';
+      blueskyV2.error = searchTerm.trim()
+        ? `No posts match "${searchTerm.trim()}".`
+        : 'No completed V2 analyses yet. Check back soon.';
       blueskyV2.posts = [];
     } else {
       blueskyV2.posts = analyses.map((analysis) => ({
@@ -463,11 +473,11 @@ async function loadArchiveV2(page = reviewPage) {
 }
 
 /** Dispatch archive loading to the currently selected review source. */
-async function loadReviewData(page = reviewPage) {
+async function loadReviewData(page = reviewPage, searchTerm = reviewSearchTerm) {
   if (reviewSource === 'v2') {
-    await loadArchiveV2(page);
+    await loadArchiveV2(page, searchTerm);
   } else {
-    await loadArchive(page);
+    await loadArchive(page, searchTerm);
   }
 }
 
@@ -816,7 +826,6 @@ function toFeedRecord(post, source) {
       confidence: post.confidence,
       toolsMentioned: post.toolsMentioned,
       url: post.url,
-      searchHaystack: `${post.text} ${post.author} ${topicNames.join(' ')}`.toLowerCase(),
       provenance: {
         rawScore: post.sentimentScore ?? 'N/A',
         emotions: emotionNames.length ? emotionNames.join(', ') : 'N/A',
@@ -843,7 +852,6 @@ function toFeedRecord(post, source) {
     confidence: post.confidence,
     toolsMentioned: [],
     url: post.url,
-    searchHaystack: `${post.text} ${post.author} ${post.topics.join(' ')}`.toLowerCase(),
     provenance: {
       emotions: post.emotions.length ? post.emotions.map((e) => `${humanizeLabel(e.label)} (${(e.confidence * 100).toFixed(0)}%)`).join(', ') : 'N/A',
       aiStance: aiStanceLabel(post.ai_stance),
@@ -861,7 +869,8 @@ function renderDataReview() {
 }
 
 /** Shared conversation-first feed renderer for both archive sources. Search
- * is client-side and scoped only to the currently loaded page of records. */
+ * is applied server-side (via loadReviewData/loadArchive/loadArchiveV2), so
+ * the posts here are already the matching set for the full archive. */
 function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessage) {
   const list = $('dataReviewList');
   const count = $('reviewCount');
@@ -897,7 +906,9 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
   const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
   const lastRow = firstRow + archiveState.posts.length - 1;
 
-  count.textContent = `${number.format(totalCount)} ${countLabel}`;
+  count.textContent = reviewSearchTerm.trim()
+    ? `${number.format(totalCount)} match${totalCount === 1 ? '' : 'es'} for "${reviewSearchTerm.trim()}"`
+    : `${number.format(totalCount)} ${countLabel}`;
   if (pagination) {
     pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Showing ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
     const prevButton = $('reviewPrevPage');
@@ -906,20 +917,11 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
     if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
   }
 
+  if (searchStatus) searchStatus.textContent = '';
+
   const records = archiveState.posts.map((post) => toFeedRecord(post, source));
-  const term = reviewSearchTerm.trim().toLowerCase();
-  const matches = term ? records.filter((record) => record.searchHaystack.includes(term)) : records;
 
-  if (searchStatus) {
-    searchStatus.textContent = term ? `${number.format(matches.length)} match${matches.length === 1 ? '' : 'es'} on this page` : '';
-  }
-
-  if (term && !matches.length) {
-    list.innerHTML = `<p class="empty">No posts on this page match "${escapeHtml(reviewSearchTerm)}".</p>`;
-    return;
-  }
-
-  list.innerHTML = matches.map((record) => {
+  list.innerHTML = records.map((record) => {
     const isExpanded = expandedReviewRow === record.uri;
     const provenanceRows = Object.entries({
       ...(record.source === 'v2' ? { 'Raw score': record.provenance.rawScore } : {}),
@@ -1035,15 +1037,16 @@ document.getElementById('reviewSource')?.addEventListener('change', (event) => {
   loadReviewData(1);
 });
 
-// Client-side search: scoped only to the currently loaded page of records.
-// Debounced with a short timer so typing stays responsive.
+// Server-side search: queries the full archive (not just the loaded page)
+// via loadReviewData, debounced with a short timer so typing stays
+// responsive. Changing the search term always resets to page 1.
 let reviewSearchDebounce = null;
 document.getElementById('reviewSearch')?.addEventListener('input', (event) => {
   const value = event.target.value;
   window.clearTimeout(reviewSearchDebounce);
   reviewSearchDebounce = window.setTimeout(() => {
     reviewSearchTerm = value;
-    renderDataReview();
+    loadReviewData(1, reviewSearchTerm);
   }, 120);
 });
 
