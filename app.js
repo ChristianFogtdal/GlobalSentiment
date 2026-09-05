@@ -338,13 +338,20 @@ async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
     const to = from + REVIEW_PAGE_SIZE - 1;
 
     // Query completed_post_analyses view with exact count + range-based pagination.
+    // Ordered by published_at (when the post was actually made) rather than
+    // created_at/processed_at (when the analysis pipeline got to it). The
+    // pipeline processes oldest-unanalyzed-first and can intermittently
+    // re-surface older backlog between bursts of recent posts, so ordering by
+    // analysis time makes the feed look stale even when the pipeline is
+    // healthy. Ordering by published_at keeps the feed showing the most
+    // recent real content first regardless of processing order.
     // The search filter is applied at the database level (via PostgREST's
     // or=(...) filter), so matches are found across the full archive rather
     // than only the currently loaded page.
     const searchFilter = buildReviewSearchFilter(searchTerm);
     const query = searchFilter
-      ? `completed_post_analyses?order=created_at.desc&${searchFilter}`
-      : `completed_post_analyses?order=created_at.desc`;
+      ? `completed_post_analyses?order=published_at.desc&${searchFilter}`
+      : `completed_post_analyses?order=published_at.desc`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
       {
@@ -425,14 +432,19 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
 
-    // Order by created_at (row creation / ingestion order) desc so the
-    // Data review tab always shows the latest records first.
+    // Order by published_at (when the post was actually made) rather than
+    // created_at (when the analysis pipeline got to it). The pipeline
+    // processes oldest-unanalyzed-first and can intermittently re-surface
+    // older backlog between bursts of recent posts, so ordering by analysis
+    // time makes the feed look stale even when the pipeline is healthy.
+    // Ordering by published_at keeps the feed showing the most recent real
+    // content first regardless of processing order.
     // The search filter is applied at the database level so matches are
     // found across the full archive rather than only the loaded page.
     const searchFilter = buildReviewSearchFilter(searchTerm);
     const query = searchFilter
-      ? `completed_post_analyses_v2?order=created_at.desc&${searchFilter}`
-      : `completed_post_analyses_v2?order=created_at.desc`;
+      ? `completed_post_analyses_v2?order=published_at.desc&${searchFilter}`
+      : `completed_post_analyses_v2?order=published_at.desc`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
       {
