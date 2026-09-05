@@ -56,7 +56,7 @@ function v2DisplayScore(sentimentScore) {
     : Math.round((sentimentScore + 1) * 50);
 }
 function aiStanceLabel(stance) {
-  return stance === 'not_applicable' || !stance ? 'N/A' : humanizeLabel(stance);
+  return stance === 'not_applicable' || !stance ? 'Not applicable' : humanizeLabel(stance);
 }
 // Convert internal snake_case/kebab-case taxonomy labels (topics, stances, etc.)
 // into human-readable, sentence-cased text for display.
@@ -172,7 +172,7 @@ function archiveDashboardData({ time = 'all', emotion = 'all', topic = 'all' } =
 
   const filteredPosts = recentPosts.filter((post) => {
     const postTopics = parseArray(post.topics);
-    const postEmotions = parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.label);
+    const postEmotions = parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.name || item.label);
     return (emotion === 'all' || postEmotions.includes(emotion))
       && (topic === 'all' || postTopics.includes(topic));
   });
@@ -188,7 +188,7 @@ function archiveDashboardData({ time = 'all', emotion = 'all', topic = 'all' } =
   const delta = prevScore === null || !posts.length ? null : score - prevScore;
   const emotionCounts = new Map();
   posts.forEach((post) => parseArray(post.emotions).forEach((item) => {
-    const name = typeof item === 'string' ? item : item.label;
+    const name = typeof item === 'string' ? item : item.name || item.label;
     if (name) emotionCounts.set(name, (emotionCounts.get(name) || 0) + 1);
   }));
   // Raw counts are passed through so the renderer can normalise once, after it
@@ -291,7 +291,7 @@ function trendSeries({ topic = 'all' } = {}) {
 
 /**
  * Build a PostgREST `or=(...)` filter that matches a search term against
- * post_text, author_handle, and topics (JSONB array of strings/objects),
+ * post_text, author_handle, and topics (JSONB array of strings or objects),
  * so search runs across the full archive at the database level instead of
  * only the currently loaded page.
  */
@@ -300,9 +300,9 @@ function buildReviewSearchFilter(term) {
   if (!trimmed) return '';
   // Escape characters that are meaningful to PostgREST's filter syntax
   // (comma, parentheses) since they would otherwise break the or=(...) list.
-  const escaped = trimmed.replace(/[,()]/g, '\\$&');
+  const escaped = trimmed.replace(/["\\,()]/g, '\\$&');
   const likeValue = `*${escaped}*`;
-  return `or=(post_text.ilike.${likeValue},author_handle.ilike.${likeValue},topics.cs.["${escaped}"])`;
+  return `or=(post_text.ilike.${likeValue},author_handle.ilike.${likeValue},topics.cs.["${escaped}"],topics.cs.[{"name":"${escaped}"}])`;
 }
 
 async function requestArchive(path, options = {}) {
@@ -425,13 +425,14 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
 
-    // V2 default ordering: most recently analyzed first, for validation.
+    // Order by created_at (row creation / ingestion order) desc so the
+    // Data review tab always shows the latest records first.
     // The search filter is applied at the database level so matches are
     // found across the full archive rather than only the loaded page.
     const searchFilter = buildReviewSearchFilter(searchTerm);
     const query = searchFilter
-      ? `completed_post_analyses_v2?order=processed_at.desc,published_at.desc&${searchFilter}`
-      : `completed_post_analyses_v2?order=processed_at.desc,published_at.desc`;
+      ? `completed_post_analyses_v2?order=created_at.desc&${searchFilter}`
+      : `completed_post_analyses_v2?order=created_at.desc`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
       {
@@ -841,7 +842,7 @@ function toFeedRecord(post, source) {
       timestamp: post.timestamp,
       text: post.text,
       score: post.displayScore,
-      sentimentLabel: humanizeLabel(post.sentiment),
+      sentimentLabel: `AI Sentiment: ${humanizeLabel(post.sentiment)}`,
       topics: topicNames,
       confidence: post.confidence,
       toolsMentioned: post.toolsMentioned,
@@ -946,10 +947,10 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
   list.innerHTML = records.map((record) => {
     const isExpanded = expandedReviewRow === record.uri;
     const provenanceRows = Object.entries({
-      ...(record.source === 'v2' ? { 'Raw score': record.provenance.rawScore } : {}),
+      ...(record.source === 'v2' ? { 'AI Sentiment score': record.provenance.rawScore } : {}),
       Confidence: `${(record.confidence * 100).toFixed(0)}%`,
       Emotions: record.provenance.emotions,
-      'AI stance': record.provenance.aiStance,
+      [record.source === 'v2' ? 'Product/Tool Stance' : 'AI stance']: record.provenance.aiStance,
       ...(record.source === 'v2' ? {
         Provider: record.provenance.provider,
         'Processed (UTC)': record.provenance.processedTimestamp,
