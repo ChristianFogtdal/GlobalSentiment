@@ -21,7 +21,7 @@ function createMockSupabase(postCount: number, analysedUris: Set<string>) {
       assertEquals(fn, 'select_unanalysed_posts');
       lastLimit = args.p_limit;
       const eligible = posts.filter((post) => !rows.some(
-        (row) => row.post_uri === post.uri && row.prompt_version === args.p_prompt_version,
+        (row) => row.post_uri === post.uri,
       ));
       return Promise.resolve({ data: eligible.slice(0, args.p_limit), error: null });
     },
@@ -122,6 +122,22 @@ Deno.test('runBatch selects nothing when every post is already analysed', async 
     assert(!('error' in result));
     assertEquals(result.selected, 0);
     assertEquals(result.scanned, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test('runBatch does not reanalyse a post that has a result from another prompt version', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = mockFetchSuccess();
+  try {
+    const supabase = createMockSupabase(20, new Set(['at://post/0']));
+    supabase.__rows[0].prompt_version = 'v2';
+    const result = await runBatch(supabase, baseConfig, 10);
+    assert(!('error' in result));
+    assertEquals(result.selected, 10);
+    assertEquals(result.results[0].post_uri, 'at://post/1');
+    assert(!result.results.some((entry) => entry.post_uri === 'at://post/0'));
   } finally {
     globalThis.fetch = originalFetch;
   }

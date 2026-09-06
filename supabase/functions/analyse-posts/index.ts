@@ -433,8 +433,8 @@ export interface BatchSummary {
 
 // Batched automatic selection. Candidate selection is delegated to the
 // select_unanalysed_posts database function, which anti-joins post_analyses_v2
-// and returns only posts that still need work for this prompt version, oldest
-// first. Filtering server-side keeps the cost of an invocation proportional to
+// and returns only posts that have never received a V2 analysis, oldest first.
+// Filtering server-side keeps the cost of an invocation proportional to
 // the batch size rather than to the size of the already-analysed backlog, and
 // removes the need for any client-side scan bound: a bounded scan-and-skip
 // loop would silently stall the pipeline once the analysed backlog exceeded
@@ -562,15 +562,14 @@ async function handleRequest(request: Request): Promise<Response> {
       .from('post_analyses_v2')
       .select('id')
       .eq('post_uri', requestedUri)
-      .eq('prompt_version', promptVersion)
       .maybeSingle();
     if (existing) {
-      return new Response(JSON.stringify({ selected: 0, completed: 0, failed: 0, skipped: 'already analysed for this prompt version' }), { headers: corsHeaders });
+      return new Response(JSON.stringify({ selected: 0, completed: 0, failed: 0, skipped: 'post already has a V2 analysis' }), { headers: corsHeaders });
     }
 
     const result = await claimAndProcess(supabase, config, post as EligiblePost);
     if (!result) {
-      return new Response(JSON.stringify({ selected: 0, completed: 0, failed: 0, skipped: 'post already claimed for this prompt version' }), { headers: corsHeaders });
+      return new Response(JSON.stringify({ selected: 0, completed: 0, failed: 0, skipped: 'post already has a V2 analysis' }), { headers: corsHeaders });
     }
     if (result.outcome === 'completed') {
       return new Response(JSON.stringify({ selected: 1, completed: 1, failed: 0, post_uri: result.post_uri }), { headers: corsHeaders });
