@@ -237,198 +237,131 @@ async function requestArchive(path, options = {}, retryTransientServerError = fa
   return { data, totalCount };
 }
 
-/**
- * Load completed post analyses from Supabase
- * Queries completed_post_analyses view joined with bluesky_posts
- */
-async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
-  const requestId = ++reviewRequestSeq.legacy;
-  try {
-    bluesky.isLoading = true;
-    renderBlueskyStatus();
-    renderDataReview();
+const REVIEW_V2_SELECT = 'post_uri,sentiment,sentiment_score,emotions,topics,tools_mentioned,'
+  + 'ai_tooling_stance,confidence,rationale,provider,deployment,model,prompt_version,'
+  + 'processed_at,post_text,author_handle,original_language,published_at,source_url';
 
+const reviewSources = {
+  legacy: {
+    state: bluesky,
+    view: 'completed_post_analyses',
+    emptyMessage: 'No completed analyses yet. Check back soon.',
+    errorLabel: 'archive',
+    afterLoad: () => {
+      renderBlueskyStatus();
+      renderDashboard(selectedData());
+    },
+    mapRow: (analysis) => ({
+      uri: analysis.post_uri,
+      score: Math.round((analysis.score || 0) * 100),
+      sentiment: {
+        positive: 'Very positive',
+        negative: 'Very negative',
+        neutral: 'Mixed',
+        mixed: 'Mixed',
+      }[analysis.sentiment] || 'Unknown',
+      confidence: analysis.confidence || 0,
+      emotions: parseArray(analysis.emotions),
+      topics: parseArray(analysis.topics),
+      ai_stance: analysis.ai_tooling_stance || 'not_applicable',
+      rationale: analysis.rationale || '',
+      model: analysis.model || 'unknown',
+      timestamp: formatTimestamp(analysis.published_at || analysis.created_at),
+      publishedAt: analysis.published_at || analysis.created_at,
+      url: analysis.source_url,
+      text: analysis.post_text || '(post text unavailable)',
+      author: analysis.author_handle || 'unknown',
+      originalLanguage: analysis.original_language || 'unknown',
+    }),
+  },
+  v2: {
+    state: blueskyV2,
+    view: 'completed_post_analyses_v2',
+    select: REVIEW_V2_SELECT,
+    emptyMessage: 'No completed V2 analyses yet. Check back soon.',
+    errorLabel: 'V2 archive',
+    mapRow: (analysis) => ({
+      uri: analysis.post_uri,
+      displayScore: v2DisplayScore(analysis.sentiment_score),
+      sentimentScore: analysis.sentiment_score,
+      sentiment: analysis.sentiment || 'unknown',
+      confidence: analysis.confidence || 0,
+      emotions: parseArray(analysis.emotions),
+      topics: parseArray(analysis.topics),
+      toolsMentioned: parseArray(analysis.tools_mentioned),
+      aiStance: analysis.ai_tooling_stance,
+      rationale: analysis.rationale || '',
+      provider: analysis.provider || 'unknown',
+      deployment: analysis.deployment || 'unknown',
+      model: analysis.model || 'unknown',
+      promptVersion: analysis.prompt_version || 'unknown',
+      processedAt: analysis.processed_at,
+      publishedAt: analysis.published_at,
+      timestamp: formatTimestamp(analysis.published_at),
+      processedTimestamp: analysis.processed_at ? formatTimestamp(analysis.processed_at) : 'N/A',
+      url: analysis.source_url,
+      text: analysis.post_text || '(post text unavailable)',
+      author: analysis.author_handle || 'unknown',
+      originalLanguage: analysis.original_language || 'unknown',
+    }),
+  },
+};
+
+async function loadReviewArchive(source, page = reviewPage, searchTerm = reviewSearchTerm) {
+  const descriptor = reviewSources[source];
+  const requestId = ++reviewRequestSeq[source];
+  const { state } = descriptor;
+  try {
+    state.isLoading = true;
+    if (descriptor.afterLoad) descriptor.afterLoad();
+    renderDataReview();
     reviewPage = page;
+
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
-
-    // Query completed_post_analyses view with exact count + range-based pagination.
-    // Ordered by published_at (when the post was actually made) rather than
-    // created_at/processed_at (when the analysis pipeline got to it). The
-    // pipeline processes oldest-unanalyzed-first and can intermittently
-    // re-surface older backlog between bursts of recent posts, so ordering by
-    // analysis time makes the feed look stale even when the pipeline is
-    // healthy. Ordering by published_at keeps the feed showing the most
-    // recent real content first regardless of processing order.
-    // The search filter is applied at the database level (via PostgREST's
-    // or=(...) filter), so matches are found across the full archive rather
-    // than only the currently loaded page.
     const searchFilter = buildReviewSearchFilter(searchTerm);
-    const query = searchFilter
-      ? `completed_post_analyses?order=published_at.desc&${searchFilter}`
-      : `completed_post_analyses?order=published_at.desc`;
+    const queryParameters = [
+      descriptor.select ? `select=${descriptor.select}` : '',
+      'order=published_at.desc',
+      searchFilter,
+    ].filter(Boolean).join('&');
+    const query = `${descriptor.view}?${queryParameters}`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
-      {
-        headers: {
-          Prefer: 'count=exact',
-          Range: `${from}-${to}`,
-        },
-      },
+      { headers: { Prefer: 'count=exact', Range: `${from}-${to}` } },
       Boolean(searchFilter)
     );
 
-    // Discard this response if a newer request has since been issued (e.g. the
-    // user kept typing), so stale results can't overwrite the current search.
-    if (requestId !== reviewRequestSeq.legacy) return;
-
-    bluesky.totalCount = totalCount;
-
+    if (requestId !== reviewRequestSeq[source]) return;
+    state.totalCount = totalCount;
     if (!analyses || analyses.length === 0) {
-      bluesky.error = searchTerm.trim()
+      state.error = searchTerm.trim()
         ? `No posts match "${searchTerm.trim()}".`
-        : 'No completed analyses yet. Check back soon.';
-      bluesky.posts = [];
+        : descriptor.emptyMessage;
+      state.posts = [];
     } else {
-      // For each analysis, we need to fetch the post details from bluesky_posts
-      const mappedPosts = analyses.map(analysis => ({
-        // Post metadata from completed_post_analyses
-        uri: analysis.post_uri,
-        score: Math.round((analysis.score || 0) * 100),
-        sentiment: {
-          'positive': 'Very positive',
-          'negative': 'Very negative', 
-          'neutral': 'Mixed',
-          'mixed': 'Mixed',
-        }[analysis.sentiment] || 'Unknown',
-        confidence: (analysis.confidence || 0), // Keep as 0-1, renderDataReview will format
-        emotions: parseArray(analysis.emotions),
-        topics: parseArray(analysis.topics),
-        ai_stance: analysis.ai_tooling_stance || 'not_applicable',
-        rationale: analysis.rationale || '',
-        model: analysis.model || 'unknown',
-        timestamp: formatTimestamp(analysis.created_at),
-        publishedAt: analysis.published_at || analysis.created_at,
-        url: analysis.source_url,
-        
-        // Post details from bluesky_posts (via JOIN in completed_post_analyses view)
-        text: analysis.post_text || '(post text unavailable)',
-        author: analysis.author_handle || 'unknown',
-        originalLanguage: analysis.original_language || 'unknown',
-      }));
-      bluesky.posts = mappedPosts;
-      bluesky.error = '';
+      state.posts = analyses.map(descriptor.mapRow);
+      state.error = '';
     }
   } catch (error) {
-    if (requestId !== reviewRequestSeq.legacy) return;
-    bluesky.error = `Failed to load archive: ${error.message}`;
-    console.error('Archive load error:', error);
+    if (requestId !== reviewRequestSeq[source]) return;
+    state.error = `Failed to load ${descriptor.errorLabel}: ${error.message}`;
+    console.error(`${descriptor.errorLabel} load error:`, error);
   } finally {
-    if (requestId === reviewRequestSeq.legacy) {
-      bluesky.isLoading = false;
-      renderBlueskyStatus();
-      renderDashboard(selectedData());
+    if (requestId === reviewRequestSeq[source]) {
+      state.isLoading = false;
+      if (descriptor.afterLoad) descriptor.afterLoad();
       renderDataReview();
     }
   }
 }
 
-/**
- * Load completed V2 (Foundry) post analyses from Supabase, for the Data
- * review tab only. Fully isolated from the legacy `bluesky` state and from
- * the main Dashboard/map aggregation, which always uses the legacy source.
- */
-async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
-  const requestId = ++reviewRequestSeq.v2;
-  try {
-    blueskyV2.isLoading = true;
-    renderDataReview();
+function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
+  return loadReviewArchive('legacy', page, searchTerm);
+}
 
-    reviewPage = page;
-    const from = (page - 1) * REVIEW_PAGE_SIZE;
-    const to = from + REVIEW_PAGE_SIZE - 1;
-
-    // Order by published_at (when the post was actually made) rather than
-    // created_at (when the analysis pipeline got to it). The pipeline
-    // processes oldest-unanalyzed-first and can intermittently re-surface
-    // older backlog between bursts of recent posts, so ordering by analysis
-    // time makes the feed look stale even when the pipeline is healthy.
-    // Ordering by published_at keeps the feed showing the most recent real
-    // content first regardless of processing order.
-    // The search filter is applied at the database level so matches are
-    // found across the full archive rather than only the loaded page.
-    // Explicit select fields matching what Data Review renders, rather than
-    // the entire view row. completed_post_analyses_v2 already filters
-    // status = 'complete' in its own WHERE clause. Data Review intentionally
-    // shows every prompt version (not just the active one) so it matches the
-    // same full-history dataset as the Dashboard's get_dashboard_v2()
-    // aggregates (see 20260906140000_dashboard_v2_include_all_prompt_versions.sql);
-    // each row still carries its own prompt_version field for inspection.
-    const REVIEW_V2_SELECT = 'post_uri,sentiment,sentiment_score,emotions,topics,tools_mentioned,'
-      + 'ai_tooling_stance,confidence,rationale,provider,deployment,model,prompt_version,'
-      + 'processed_at,post_text,author_handle,original_language,published_at,source_url';
-    const searchFilter = buildReviewSearchFilter(searchTerm);
-    const filters = [searchFilter].filter(Boolean).join('&');
-    const query = `completed_post_analyses_v2?select=${REVIEW_V2_SELECT}&order=published_at.desc${filters ? `&${filters}` : ''}`;
-    const { data: analyses, totalCount } = await requestArchive(
-      query,
-      {
-        headers: {
-          Prefer: 'count=exact',
-          Range: `${from}-${to}`,
-        },
-      },
-      Boolean(searchFilter)
-    );
-
-    // Discard this response if a newer request has since been issued (e.g. the
-    // user kept typing), so stale results can't overwrite the current search.
-    if (requestId !== reviewRequestSeq.v2) return;
-
-    blueskyV2.totalCount = totalCount;
-
-    if (!analyses || analyses.length === 0) {
-      blueskyV2.error = searchTerm.trim()
-        ? `No posts match "${searchTerm.trim()}".`
-        : 'No completed V2 analyses yet. Check back soon.';
-      blueskyV2.posts = [];
-    } else {
-      blueskyV2.posts = analyses.map((analysis) => ({
-        uri: analysis.post_uri,
-        displayScore: v2DisplayScore(analysis.sentiment_score),
-        sentimentScore: analysis.sentiment_score,
-        sentiment: analysis.sentiment || 'unknown',
-        confidence: analysis.confidence || 0,
-        emotions: parseArray(analysis.emotions),
-        topics: parseArray(analysis.topics),
-        toolsMentioned: parseArray(analysis.tools_mentioned),
-        aiStance: analysis.ai_tooling_stance,
-        rationale: analysis.rationale || '',
-        provider: analysis.provider || 'unknown',
-        deployment: analysis.deployment || 'unknown',
-        model: analysis.model || 'unknown',
-        promptVersion: analysis.prompt_version || 'unknown',
-        processedAt: analysis.processed_at,
-        publishedAt: analysis.published_at,
-        timestamp: formatTimestamp(analysis.published_at),
-        processedTimestamp: analysis.processed_at ? formatTimestamp(analysis.processed_at) : 'N/A',
-        url: analysis.source_url,
-        text: analysis.post_text || '(post text unavailable)',
-        author: analysis.author_handle || 'unknown',
-        originalLanguage: analysis.original_language || 'unknown',
-      }));
-      blueskyV2.error = '';
-    }
-  } catch (error) {
-    if (requestId !== reviewRequestSeq.v2) return;
-    blueskyV2.error = `Failed to load V2 archive: ${error.message}`;
-    console.error('V2 archive load error:', error);
-  } finally {
-    if (requestId === reviewRequestSeq.v2) {
-      blueskyV2.isLoading = false;
-      renderDataReview();
-    }
-  }
+function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
+  return loadReviewArchive('v2', page, searchTerm);
 }
 
 /** Dispatch archive loading to the currently selected review source. */
