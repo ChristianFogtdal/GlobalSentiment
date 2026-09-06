@@ -60,7 +60,7 @@ const SEARCH_TERMS = [
   'AI education',
   'open source AI',
 ];
-const POSTS_PER_TERM = 10;
+const POSTS_PER_TERM = 5;
 const corsHeaders = { 'Content-Type': 'application/json' };
 
 function containsTerm(text: string, term: string) {
