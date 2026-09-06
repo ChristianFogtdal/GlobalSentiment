@@ -417,8 +417,6 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
 
-    const activePromptVersion = await getActivePromptVersion();
-
     // Order by published_at (when the post was actually made) rather than
     // created_at (when the analysis pipeline got to it). The pipeline
     // processes oldest-unanalyzed-first and can intermittently re-surface
@@ -430,16 +428,16 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
     // found across the full archive rather than only the loaded page.
     // Explicit select fields matching what Data Review renders, rather than
     // the entire view row. completed_post_analyses_v2 already filters
-    // status = 'complete' in its own WHERE clause; the prompt_version filter
-    // here additionally scopes results to the single authoritative active
-    // prompt version (see supabase/migrations/20260904090000_active_prompt_version_contract.sql),
-    // so results from superseded prompt versions never surface here either.
+    // status = 'complete' in its own WHERE clause. Data Review intentionally
+    // shows every prompt version (not just the active one) so it matches the
+    // same full-history dataset as the Dashboard's get_dashboard_v2()
+    // aggregates (see 20260906140000_dashboard_v2_include_all_prompt_versions.sql);
+    // each row still carries its own prompt_version field for inspection.
     const REVIEW_V2_SELECT = 'post_uri,sentiment,sentiment_score,emotions,topics,tools_mentioned,'
       + 'ai_tooling_stance,confidence,rationale,provider,deployment,model,prompt_version,'
       + 'processed_at,post_text,author_handle,original_language,published_at,source_url';
     const searchFilter = buildReviewSearchFilter(searchTerm);
-    const promptFilter = activePromptVersion ? `prompt_version=eq.${encodeURIComponent(activePromptVersion)}` : '';
-    const filters = [searchFilter, promptFilter].filter(Boolean).join('&');
+    const filters = [searchFilter].filter(Boolean).join('&');
     const query = `completed_post_analyses_v2?select=${REVIEW_V2_SELECT}&order=published_at.desc${filters ? `&${filters}` : ''}`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
