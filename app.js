@@ -1,5 +1,7 @@
-// The dashboard aggregates the full archive; the filter controls were removed.
-const state = { time: 'all', emotion: 'all', topic: 'all' };
+// Full-history dashboard metrics now come from the server aggregate
+// (public.get_dashboard_v2()); there is no client-side time/emotion/topic
+// filter state anymore (the filter controls were removed previously; the
+// topic-scoped trend chart is driven solely by `trendTopic`).
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
@@ -7,10 +9,14 @@ const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const bluesky = { posts: [], allPosts: [], isLoading: false, error: '', totalCount: 0 };
 const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
-// Dedicated dataset for the main Dashboard/map view, sourced from
-// completed_post_analyses_v2 (Foundry). Fully independent from `bluesky`/
-// `blueskyV2`, which continue to back the Data review tab's Legacy/V2 toggle.
-const dashboardV2 = { allPosts: [], isLoading: false, error: '', totalCount: 0, lastLoadedAt: null };
+// Dedicated dataset for the main Dashboard/map view, sourced from the
+// server-aggregated public.get_dashboard_v2() RPC (Foundry, active prompt
+// version only). Fully independent from `bluesky`/`blueskyV2`, which
+// continue to back the Data review tab's Legacy/V2 toggle.
+//   - aggregate: the full-history totals/topics/emotions/trend payload.
+//   - recent: the bounded recent-post feed (labelled as such in the UI);
+//     never treated as, or merged into, a pretend full archive.
+const dashboardV2 = { aggregate: null, recent: [], isLoading: false, error: '', totalCount: 0, lastLoadedAt: null };
 const REVIEW_PAGE_SIZE = 100;
 let reviewPage = 1;
 let reviewSource = 'v2'; // 'legacy' | 'v2' -- Latest model (Foundry) is the default on open
@@ -151,114 +157,53 @@ function parseArray(value) {
 
 
 
-function periodAverageScore(hours, offsetHours) {
-  const end = Date.now() - offsetHours * 60 * 60 * 1000;
-  const start = end - hours * 60 * 60 * 1000;
-  const posts = dashboardV2.allPosts.filter((post) => {
-    const t = new Date(post.publishedAt || post.timestamp).getTime();
-    return !Number.isNaN(t) && t >= start && t < end;
-  });
-  if (!posts.length) return null;
-  return Math.round(posts.reduce((sum, post) => sum + post.score, 0) / posts.length);
-}
+// Hourly bucket granularity, matching the server-side get_dashboard_v2()/
+// get_dashboard_v2_trend() aggregation. Kept here only for the chart's
+// front-loaded-bootstrap-period trim below (client-side rendering concern),
+// not for any client-side aggregation.
+const HOUR_MS = 60 * 60 * 1000;
 
-function archiveDashboardData({ time = 'all', emotion = 'all', topic = 'all' } = {}) {
-  const hours = { '1h': 1, '24h': 24, '7d': 24 * 7 }[time] || null;
-  const cutoff = hours ? Date.now() - hours * 60 * 60 * 1000 : null;
-  const recentPosts = cutoff === null ? dashboardV2.allPosts : dashboardV2.allPosts.filter((post) => {
-    const publishedAt = new Date(post.publishedAt || post.timestamp).getTime();
-    return Number.isNaN(publishedAt) || publishedAt >= cutoff;
-  });
-
-  const filteredPosts = recentPosts.filter((post) => {
-    const postTopics = parseArray(post.topics);
-    const postEmotions = parseArray(post.emotions).map((item) => typeof item === 'string' ? item : item.name || item.label);
-    return (emotion === 'all' || postEmotions.includes(emotion))
-      && (topic === 'all' || postTopics.includes(topic));
-  });
-  const posts = filteredPosts;
-  const average = (values) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : 0;
-  const score = average(posts.map((post) => post.score));
-  const confidence = average(posts.map((post) => post.confidence * 100));
-  // Movement vs the immediately preceding period of equal length, computed
-  // over the full (unfiltered) dataset so the cue reflects overall momentum
-  // rather than the currently selected emotion/topic slice. Not meaningful
-  // when the whole archive is in scope.
-  const prevScore = hours ? periodAverageScore(hours, hours) : null;
-  const delta = prevScore === null || !posts.length ? null : score - prevScore;
-  const emotionCounts = new Map();
-  posts.forEach((post) => parseArray(post.emotions).forEach((item) => {
-    const name = typeof item === 'string' ? item : item.name || item.label;
-    if (name) emotionCounts.set(name, (emotionCounts.get(name) || 0) + 1);
+// Full-history metrics, topic cloud, emotion list, and stance now come
+// directly from the server aggregate (public.get_dashboard_v2()) rather than
+// being recomputed client-side from a downloaded archive. `time`/`emotion`
+// filters are no longer supported (the filter controls were removed; see the
+// top-of-file note) -- only `topic` remains, driving the trend chart only.
+function archiveDashboardData() {
+  const aggregate = dashboardV2.aggregate;
+  if (!aggregate) {
+    return { score: 0, items: 0, confidence: 'N/A', emotions: [], topics: [], stance: 'N/A', stanceCount: 0 };
+  }
+  const topics = (aggregate.topics || []).map((topic) => ({
+    id: topic.name,
+    name: humanizeLabel(topic.name),
+    volume: topic.volume,
+    sentiment: topic.avg_score,
+    emotion: '',
+    impact: topic.impact,
+    lowSample: topic.low_sample,
   }));
-  // Raw counts are passed through so the renderer can normalise once, after it
-  // has dropped the emotions it ignores.
-  const emotions = [...emotionCounts.entries()]
-    .map(([name, count]) => [name, count])
-    .sort((first, second) => second[1] - first[1]);
-  const topicMap = new Map();
-  posts.forEach((post) => parseArray(post.topics).forEach((name) => {
-    const entry = topicMap.get(name) || { scores: [], volume: 0 };
-    entry.scores.push(post.score);
-    entry.volume += 1;
-    topicMap.set(name, entry);
-  }));
-  const topics = [...topicMap.entries()].map(([name, entry]) => {
-    const sentiment = average(entry.scores);
-    return { id: name, name: humanizeLabel(name), volume: entry.volume, sentiment, emotion: '', impact: Number((sentiment - score).toFixed(1)), lowSample: entry.volume < 3 };
-  }).sort((first, second) => second.volume - first.volume);
-  // Prefer the most common *meaningful* stance classification; only fall back
-  // to not_applicable if there is no applicable stance in the selection at all.
-  const stanceCounts = new Map();
-  posts.forEach((post) => stanceCounts.set(post.ai_stance, (stanceCounts.get(post.ai_stance) || 0) + 1));
-  const meaningfulStances = [...stanceCounts.entries()].filter(([name]) => name && name !== 'not_applicable');
-  const stance = (meaningfulStances.length ? meaningfulStances : [...stanceCounts.entries()])
-    .sort((first, second) => second[1] - first[1])[0];
-  const selectedTopic = topics.find((item) => item.id === topic);
+  const emotions = (aggregate.emotions || []).map((emotion) => [emotion.name, emotion.count]);
+  const stance = aggregate.totals?.stance;
+  const stanceCount = aggregate.totals?.stance_count || 0;
   return {
-    score,
-    prevScore,
-    delta,
-    items: posts.length,
-    confidence: confidence ? `${confidence}%` : 'N/A',
+    score: aggregate.totals?.avg_score ?? 0,
+    items: aggregate.totals?.count ?? 0,
+    confidence: aggregate.totals?.avg_confidence != null ? `${aggregate.totals.avg_confidence}%` : 'N/A',
     emotions,
     topics,
-    selectedTopic,
-    selectedEmotion: emotions.find(([name]) => name === emotion),
-    stance: stance ? (stance[0] === 'not_applicable' ? 'N/A' : `${humanizeLabel(stance[0])} (${stance[1]})`) : 'N/A',
-    stanceCount: stance ? stance[1] : 0,
-    posts,
+    stance: !stance || stance === 'not_applicable' ? 'N/A' : `${humanizeLabel(stance)} (${stanceCount})`,
+    stanceCount,
   };
 }
 
-// Hourly sentiment series keyed strictly on the source post's publication time
-// (published_at), never on processed_at/created_at, which can trail publication
-// by a day or more. Records without a valid publication time are excluded from
-// the trend rather than being bucketed against a substitute timestamp.
-// Buckets holding fewer than MIN_BUCKET_POSTS are returned with a null score so
-// the chart breaks the line instead of drawing a swing from one or two posts as
-// though it were a trend.
-const HOUR_MS = 60 * 60 * 1000;
-const MIN_BUCKET_POSTS = 3;
-
-function trendSeries({ topic = 'all' } = {}) {
-  const rows = [];
-  dashboardV2.allPosts.forEach((post) => {
-    if (topic !== 'all' && !parseArray(post.topics).includes(topic)) return;
-    if (!post.publishedAt) return;
-    const time = new Date(post.publishedAt).getTime();
-    if (!Number.isNaN(time)) rows.push({ time, score: post.score });
-  });
-  if (!rows.length) return { points: [], score: null, items: 0 };
-
-  const buckets = new Map();
-  rows.forEach(({ time, score }) => {
-    const key = Math.floor(time / HOUR_MS);
-    const entry = buckets.get(key) || { total: 0, count: 0 };
-    entry.total += score;
-    entry.count += 1;
-    buckets.set(key, entry);
-  });
+// Converts a server-computed trend payload (either the "all topics" section
+// embedded in get_dashboard_v2(), or a topic-scoped get_dashboard_v2_trend()
+// response) into the {points, score, items} shape the chart renderer expects.
+// Buckets with fewer than the server's minimum sample size already arrive
+// with score: null (no interpolation); this function only reshapes them for
+// rendering, it performs no aggregation of its own.
+function trendSeriesFromBuckets(buckets) {
+  if (!buckets || !buckets.length) return { points: [], score: null, items: 0 };
 
   // The archive is front-loaded with a sparse bootstrap/backfill period, so
   // anchoring the axis to the full span would leave the line crushed against
@@ -267,26 +212,32 @@ function trendSeries({ topic = 'all' } = {}) {
   // meaningful, continuous data collection; earlier buckets are still present
   // in the underlying data/aggregation, they are simply not displayed.
   const CHART_START_MS = Date.UTC(2026, 8, 2, 9, 0, 0); // Sep 2, 09:00 UTC
-  const CHART_START_KEY = Math.floor(CHART_START_MS / HOUR_MS);
-  const keys = [...buckets.keys()].sort((first, second) => first - second);
-  const start = CHART_START_KEY;
+  const byKey = new Map(buckets.map((bucket) => [Math.floor(new Date(bucket.bucket_start).getTime() / HOUR_MS), bucket]));
+  const keys = [...byKey.keys()].sort((first, second) => first - second);
+  const start = Math.floor(CHART_START_MS / HOUR_MS);
   const end = keys.length ? keys[keys.length - 1] : start;
 
   const points = [];
   for (let key = start; key <= end; key += 1) {
-    const entry = buckets.get(key);
-    const solid = entry && entry.count >= MIN_BUCKET_POSTS;
+    const bucket = byKey.get(key);
     points.push({
       start: key * HOUR_MS,
-      count: entry ? entry.count : 0,
-      score: solid ? Math.round(entry.total / entry.count) : null,
+      count: bucket ? bucket.count : 0,
+      score: bucket && bucket.score !== null && bucket.score !== undefined ? Math.round(bucket.score) : null,
     });
   }
   // Report over the charted window so the headline number and the line agree.
-  const windowRows = rows.filter((row) => Math.floor(row.time / HOUR_MS) >= start);
-  const items = windowRows.length || rows.length;
-  const source = windowRows.length ? windowRows : rows;
-  const score = Math.round(source.reduce((sum, row) => sum + row.score, 0) / items);
+  // Uses each bucket's raw (unrounded, un-suppressed) average so the headline
+  // reflects every post in the window, not just buckets solid enough to draw.
+  const windowKeys = keys.filter((key) => key >= start);
+  const sourceKeys = windowKeys.length ? windowKeys : keys;
+  const totals = sourceKeys.reduce((acc, key) => {
+    const bucket = byKey.get(key);
+    const rawAvg = bucket.raw_avg ?? bucket.score ?? 0;
+    return { sum: acc.sum + rawAvg * bucket.count, count: acc.count + bucket.count };
+  }, { sum: 0, count: 0 });
+  const items = totals.count;
+  const score = items ? Math.round(totals.sum / items) : null;
   return { points, score, items };
 }
 
@@ -322,6 +273,39 @@ async function requestArchive(path, options = {}) {
   const contentRange = response.headers.get('content-range'); // e.g. "0-99/955"
   const totalCount = contentRange ? Number(contentRange.split('/')[1]) : data.length;
   return { data, totalCount };
+}
+
+// Short-lived cache for the single authoritative active prompt version
+// (public.get_active_prompt_version(), see
+// supabase/migrations/20260904090000_active_prompt_version_contract.sql).
+// Data Review filters every V2 request by this value so results from
+// superseded prompt versions never surface, matching the dashboard's
+// get_dashboard_v2() scoping. Re-fetched at most once per refresh cycle
+// rather than on every keystroke/page change.
+let activePromptVersionCache = { value: null, fetchedAt: 0 };
+const ACTIVE_PROMPT_VERSION_CACHE_MS = 60 * 1000;
+
+async function getActivePromptVersion() {
+  const now = Date.now();
+  if (activePromptVersionCache.value && now - activePromptVersionCache.fetchedAt < ACTIVE_PROMPT_VERSION_CACHE_MS) {
+    return activePromptVersionCache.value;
+  }
+  try {
+    const { data } = await requestArchive('rpc/get_active_prompt_version', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    if (typeof data === 'string' && data) {
+      activePromptVersionCache = { value: data, fetchedAt: now };
+      return data;
+    }
+  } catch (error) {
+    console.error('Failed to resolve active prompt version:', error);
+  }
+  // Fail open to "no filter" here rather than blocking Data Review entirely;
+  // completed_post_analyses_v2 already restricts to status = 'complete'.
+  return activePromptVersionCache.value;
 }
 /**
  * Load completed post analyses from Supabase
@@ -433,6 +417,8 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
 
+    const activePromptVersion = await getActivePromptVersion();
+
     // Order by published_at (when the post was actually made) rather than
     // created_at (when the analysis pipeline got to it). The pipeline
     // processes oldest-unanalyzed-first and can intermittently re-surface
@@ -442,10 +428,19 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
     // content first regardless of processing order.
     // The search filter is applied at the database level so matches are
     // found across the full archive rather than only the loaded page.
+    // Explicit select fields matching what Data Review renders, rather than
+    // the entire view row. completed_post_analyses_v2 already filters
+    // status = 'complete' in its own WHERE clause; the prompt_version filter
+    // here additionally scopes results to the single authoritative active
+    // prompt version (see supabase/migrations/20260904090000_active_prompt_version_contract.sql),
+    // so results from superseded prompt versions never surface here either.
+    const REVIEW_V2_SELECT = 'post_uri,sentiment,sentiment_score,emotions,topics,tools_mentioned,'
+      + 'ai_tooling_stance,confidence,rationale,provider,deployment,model,prompt_version,'
+      + 'processed_at,post_text,author_handle,original_language,published_at,source_url';
     const searchFilter = buildReviewSearchFilter(searchTerm);
-    const query = searchFilter
-      ? `completed_post_analyses_v2?order=published_at.desc&${searchFilter}`
-      : `completed_post_analyses_v2?order=published_at.desc`;
+    const promptFilter = activePromptVersion ? `prompt_version=eq.${encodeURIComponent(activePromptVersion)}` : '';
+    const filters = [searchFilter, promptFilter].filter(Boolean).join('&');
+    const query = `completed_post_analyses_v2?select=${REVIEW_V2_SELECT}&order=published_at.desc${filters ? `&${filters}` : ''}`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
       {
@@ -516,47 +511,42 @@ async function loadReviewData(page = reviewPage, searchTerm = reviewSearchTerm) 
 }
 
 /**
- * Load the full completed_post_analyses_v2 (Foundry) archive for the main
- * Dashboard/map view. This is now the default/sole source for the dashboard
- * aggregation; the Data review tab's Legacy/V2 toggle remains independent.
+ * Load the compact, prompt-scoped dashboard aggregate (public.get_dashboard_v2())
+ * for the main Dashboard/map view: one bounded server response instead of
+ * paginating through the full completed_post_analyses_v2 archive. Full-history
+ * metrics and trends remain historically accurate because aggregation happens
+ * in SQL, not in the browser. The Data review tab's Legacy/V2 toggle remains
+ * independent and continues to page through the archive directly.
  */
 async function loadDashboardV2() {
   try {
     dashboardV2.isLoading = true;
     renderBlueskyStatus();
 
-    const allAnalyses = [];
-    const pageSize = 1000;
-    let offset = 0;
-    let page;
-    let totalCount = 0;
-    do {
-      const result = await requestArchive(
-        `completed_post_analyses_v2?order=processed_at.desc&limit=${pageSize}&offset=${offset}`,
-        { headers: { Prefer: 'count=exact' } }
-      );
-      page = result.data;
-      totalCount = result.totalCount || totalCount;
-      if (Array.isArray(page)) allAnalyses.push(...page);
-      offset += page?.length || 0;
-    } while (page?.length === pageSize);
+    const { data: aggregate } = await requestArchive('rpc/get_dashboard_v2', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
 
-    dashboardV2.totalCount = totalCount || allAnalyses.length;
+    dashboardV2.totalCount = aggregate?.totals?.count || 0;
 
-    if (!allAnalyses.length) {
+    if (!aggregate || !aggregate.totals?.count) {
       dashboardV2.error = 'No completed V2 analyses yet. Check back soon.';
-      dashboardV2.allPosts = [];
+      dashboardV2.aggregate = null;
+      dashboardV2.recent = [];
     } else {
-      dashboardV2.allPosts = allAnalyses.map((analysis) => ({
+      dashboardV2.aggregate = aggregate;
+      trendTopicCache = new Map();
+      // Bounded recent feed only; never merged into a pretend full archive.
+      dashboardV2.recent = (aggregate.recent || []).map((analysis) => ({
         uri: analysis.post_uri,
-        score: v2DisplayScore(analysis.sentiment_score),
+        score: analysis.display_score,
         sentiment: analysis.sentiment || 'unknown',
         confidence: analysis.confidence || 0,
-        // Normalize to the {label, confidence} shape archiveDashboardData expects.
         emotions: parseArray(analysis.emotions).map((item) => (
           typeof item === 'string' ? item : { label: item.name, confidence: item.intensity || 0 }
         )),
-        // Normalize to plain topic-name strings, matching legacy's shape.
         topics: parseArray(analysis.topics).map((item) => (typeof item === 'string' ? item : item.name)).filter(Boolean),
         ai_stance: analysis.ai_tooling_stance || 'not_applicable',
         rationale: analysis.rationale || '',
@@ -567,15 +557,13 @@ async function loadDashboardV2() {
         text: analysis.post_text || '(post text unavailable)',
         author: analysis.author_handle || 'unknown',
         originalLanguage: analysis.original_language || 'unknown',
-        reply_count: analysis.reply_count || 0,
-        like_count: analysis.like_count || 0,
       }));
       dashboardV2.error = '';
     }
     dashboardV2.lastLoadedAt = new Date();
   } catch (error) {
-    dashboardV2.error = `Failed to load V2 dashboard archive: ${error.message}`;
-    console.error('Dashboard V2 archive load error:', error);
+    dashboardV2.error = `Failed to load V2 dashboard aggregate: ${error.message}`;
+    console.error('Dashboard V2 aggregate load error:', error);
   } finally {
     dashboardV2.isLoading = false;
     renderBlueskyStatus();
@@ -591,7 +579,7 @@ function renderFreshness() {
 }
 
 function selectedData() {
-  return archiveDashboardData(state);
+  return archiveDashboardData();
 }
 
 function renderDashboardMetrics(data) {
@@ -668,11 +656,29 @@ function renderTopics(topics) {
 // rather than being interpolated, so the chart never implies a trend it cannot
 // support. Deliberately no volume layer: one chart, one metric.
 let trendTopic = 'all';
+// Cache of topic-scoped trend payloads (public.get_dashboard_v2_trend()) so
+// re-selecting a topic during the same session doesn't refetch. Invalidated
+// whenever a fresh dashboard aggregate loads (see loadDashboardV2).
+let trendTopicCache = new Map();
 
-function renderTrend() {
+async function fetchTrendBuckets(topic) {
+  if (topic === 'all') return dashboardV2.aggregate?.trend || [];
+  if (trendTopicCache.has(topic)) return trendTopicCache.get(topic);
+  const { data } = await requestArchive('rpc/get_dashboard_v2_trend', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_topic: topic }),
+  });
+  const buckets = data?.trend || [];
+  trendTopicCache.set(topic, buckets);
+  return buckets;
+}
+
+async function renderTrend() {
   const container = $('trendChart');
   if (!container) return;
-  const { points, score, items } = trendSeries({ topic: trendTopic });
+  const buckets = await fetchTrendBuckets(trendTopic);
+  const { points, score, items } = trendSeriesFromBuckets(buckets);
   const solid = points.filter((point) => point.score !== null);
   // A chart needs at least one connected pair to read as a trend. Isolated dots
   // scattered across an empty frame look broken rather than sparse.

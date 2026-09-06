@@ -66,7 +66,7 @@ const baseConfig = {
 function mockFetchSuccess() {
   const analysis = {
     sentiment: 'neutral', sentiment_score: 0, emotions: [{ name: 'neutral', intensity: 0.5 }],
-    topics: [], tools_mentioned: [], ai_tooling_stance: 'not_applicable', confidence: 0.7,
+    topics: [{ name: 'Capabilities', relevance: 0.5 }], tools_mentioned: [], ai_tooling_stance: 'not_applicable', confidence: 0.7,
     rationale: 'Grounded rationale text.',
   };
   return (() => Promise.resolve(

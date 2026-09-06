@@ -62,11 +62,52 @@ Configure these secrets on the function before invoking it or enabling its sched
 - `AZURE_FOUNDRY_API_KEY`
 - `AZURE_FOUNDRY_DEPLOYMENT`
 - `AZURE_FOUNDRY_MODEL`
-- `LLM_PROMPT_VERSION`
 - `LLM_PROCESSING_ENABLED` (must be exactly `enabled`, otherwise the function exits before
   selecting or calling any post)
 - `LLM_BATCH_SIZE` (optional; defaults to 10, hard-clamped to a ceiling of 50 regardless of
   configured value)
+
+The active V2 prompt version is **not** an independent function secret. It is resolved at runtime
+from the single authoritative database source, `public.get_active_prompt_version()` (see
+`supabase/migrations/20260904090000_active_prompt_version_contract.sql`), which both this worker
+and the dashboard read. Update the active prompt version by updating that single database row
+(`update public.app_settings set value = '...' where key = 'active_prompt_version'`); the
+`(post_uri, prompt_version)` uniqueness constraint then creates forward-only analyses without
+changing historical V2 rows.
+
+`LLM_PROMPT_VERSION` may still be set on the function as a transitional legacy value during
+deployment migration. If present, it is validated against the database value on every invocation
+and the worker fails closed (claims and processes nothing) on any mismatch, so the worker can never
+process one prompt version while the dashboard displays another. Remove this env var entirely once
+all environments have migrated to the database-resolved value.
+
+### V2 AI-Sentiment taxonomy contract
+
+For the new prompt version, `sentiment` is **AI Sentiment**: the author's evaluation of the AI
+technology, company, model, deployment, or AI-related development under discussion. It is not
+generic textual tone. `positive`, `negative`, `neutral`, and `mixed` respectively mean endorsement,
+criticism/harm, factual reporting without an evaluative position, and material positive plus
+negative views. `sentiment_score` stays in `[-1, 1]` and agrees with its category.
+
+Topics contain one to three unique labels from this fixed taxonomy:
+`Reliability, Accuracy, Quality, Performance, Capabilities, Innovation, Safety, Security, Privacy,
+Trust, Transparency, Explainability, Bias, Fairness, Automation, Productivity, Efficiency,
+Usability, Accessibility, Personalization, Integration, Deployment, Scalability, Availability,
+Compatibility, Cost, Pricing, Business Value, ROI, Competition, Market Adoption, Economic Impact,
+Employment Impact, Regulation, Governance, Ethics, Copyright, Digital Rights, Public Opinion,
+Political Impact, Misinformation, Education, Learning, Research, Healthcare, Environmental Impact,
+Open Source, Community, Risk, Opportunity, Other`. `Other` is used only where no listed label
+fits. Emotions are independently selected from: `excitement, optimism, trust, curiosity,
+admiration, relief, neutral, surprise, confusion, concern, skepticism, uncertainty, frustration,
+disappointment, fear, anger, awe, hype, doubt, urgency`.
+
+`ai_tooling_stance` remains a separate **Product/Tool Stance**. It is populated only for an
+explicit evaluation of a named AI product or tool; factual named-tool mentions and general AI posts
+use `not_applicable`. `tools_mentioned` remains factual entity extraction.
+
+Legacy analyses remain keyword-based generic tone and are not comparable to this V2 AI Sentiment.
+Existing Legacy and V2 records, including historic free-form topic variants, are intentionally
+retained and are not backfilled.
 
 ### Manual single-post invocation
 
@@ -78,7 +119,7 @@ one-post manual-test behavior for debugging or targeted reprocessing.
 
 With no `post_uri` in the request body, the function selects up to `LLM_BATCH_SIZE` eligible posts
 (oldest `bluesky_posts.published_at` first, excluding posts that already have a
-`post_analyses_v2` row for the current `LLM_PROMPT_VERSION`) and processes them **sequentially**
+`post_analyses_v2` row for the current database-resolved active prompt version) and processes them **sequentially**
 — never concurrently. A per-post Foundry or validation failure is recorded as `status='failed'`
 with a sanitized `error_message`, and the batch continues to the next candidate rather than
 aborting. There is no automatic retry in this phase; failed rows are simply not reprocessed
@@ -115,24 +156,34 @@ manual verification surface, independent of the main Dashboard/map:
   distinct from the legacy tab's `created_at desc` ordering.
 - V2's canonical `sentiment_score` is `[-1, 1]`; the UI converts it to a 0-100 display score with
   `displayScore = round((sentiment_score + 1) * 50)` — the database itself performs no conversion.
-- Curated always-visible V2 columns: Published Date, Score, Sentiment, Tools Mentioned, Topics,
+- Curated always-visible V2 columns: Published Date, AI Sentiment score, AI Sentiment, Tools Mentioned, Topics,
   Confidence, Provider, Processed At. All other V2 fields (raw `sentiment_score`, `emotions`,
   `ai_tooling_stance`, `rationale`, `deployment`, `model`, `prompt_version`) are available per-row
-  via a "View" details expander. `ai_tooling_stance = 'not_applicable'` is labeled "N/A" in the UI.
+  via a "View" details expander. `ai_tooling_stance = 'not_applicable'` is labeled "Not applicable" as
+  Product/Tool Stance in the UI.
 
-### Main Dashboard/map now reads V2 (Foundry) data
+### Main Dashboard/map: compact, prompt-scoped aggregate (not a full-archive download)
 
-The main Dashboard/map aggregation (`selectedData()` / `archiveDashboardData()`) now sources its data
-exclusively from `completed_post_analyses_v2`, loaded via `loadDashboardV2()`. This is a deliberate
-cutover from the legacy `completed_post_analyses` source, made once V2's one-post and 10-post/20-row
-manual validation passed. Emotions/topics are normalized client-side from V2's `{name, intensity}` /
-`{name, relevance}` object shapes to the plain string/label shapes the aggregation code expects.
+The main Dashboard/map aggregation (`selectedData()` / `archiveDashboardData()`) is sourced from a
+single server-side RPC, `public.get_dashboard_v2()` (see
+`supabase/migrations/20260904091500_dashboard_v2_aggregate_rpc.sql`), loaded via `loadDashboardV2()`.
+The browser no longer paginates through the full `completed_post_analyses_v2` archive to build the
+dashboard: the RPC computes full-history totals, topic/emotion/stance aggregates, and hourly trend
+buckets in SQL, scoped to `status = 'complete'` and the single authoritative active prompt version
+(`public.get_active_prompt_version()`), and returns them in one compact response alongside a bounded
+recent-post feed (`dashboardV2.recent`, currently the 200 most recently processed rows). Full-history
+metrics and the trend chart therefore remain historically accurate even though the browser never
+downloads the full archive — only Data Review does that, via its own paginated/searchable queries.
 
-The Data review tab's Legacy/V2 toggle is unaffected by this cutover and remains available for
+Topic-filtered trend views (the trend chart's topic dropdown) call a companion RPC,
+`public.get_dashboard_v2_trend(p_topic)`, on demand only when a specific topic is selected; the
+"all topics" trend is already included in the main aggregate.
+
+The Data review tab's Legacy/V2 toggle is unaffected by this and remains available for
 side-by-side comparison and ongoing spot-checking of individual V2 rows — it uses its own separate
-`bluesky` (legacy) / `blueskyV2` (V2) state, distinct from the dashboard's `dashboardV2` state.
+`bluesky` (legacy) / `blueskyV2` (V2) state, distinct from the dashboard's `dashboardV2` state, and
+now also filters its V2 queries to the same active prompt version as the dashboard.
 
 
 See `DEPLOYMENT_SECRETS.txt` at the repo root for the full names-only secret template. Do not
 commit secret values, `.env` files, or logs containing credentials.
-

@@ -1,12 +1,18 @@
 import { assert, assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { validateAnalysisResponse, callFoundry } from './index.ts';
+import {
+  ALLOWED_EMOTIONS,
+  ALLOWED_TOPICS,
+  buildPrompt,
+  callFoundry,
+  validateAnalysisResponse,
+} from './index.ts';
 
 function validAnalysis(overrides: Record<string, unknown> = {}) {
   return {
     sentiment: 'positive',
     sentiment_score: 0.6,
     emotions: [{ name: 'excitement', intensity: 0.8 }],
-    topics: [{ name: 'productivity', relevance: 0.7 }],
+    topics: [{ name: 'Productivity', relevance: 0.7 }],
     tools_mentioned: ['Copilot'],
     ai_tooling_stance: 'positive',
     confidence: 0.9,
@@ -103,8 +109,21 @@ Deno.test('rejects confidence outside [0, 1]', () => {
   assert(!result.ok);
 });
 
-Deno.test('rejects topics array exceeding max size', () => {
-  const topics = Array.from({ length: 11 }, (_, index) => ({ name: `topic-${index}`, relevance: 0.5 }));
+Deno.test('accepts every approved emotion and topic', () => {
+  const result = validateAnalysisResponse(validAnalysis({
+    emotions: ALLOWED_EMOTIONS.map((name) => ({ name, intensity: 0.5 })),
+    topics: ALLOWED_TOPICS.slice(0, 3).map((name) => ({ name, relevance: 0.5 })),
+  }));
+  assert(result.ok);
+});
+
+Deno.test('rejects topic arrays outside the one-to-three item bound', () => {
+  assert(!validateAnalysisResponse(validAnalysis({ topics: [] })).ok);
+  assert(validateAnalysisResponse(validAnalysis({ topics: [{ name: 'Privacy', relevance: 0.5 }] })).ok);
+  assert(validateAnalysisResponse(validAnalysis({
+    topics: ['Privacy', 'Safety', 'Trust'].map((name) => ({ name, relevance: 0.5 })),
+  })).ok);
+  const topics = ['Privacy', 'Safety', 'Trust', 'Security'].map((name) => ({ name, relevance: 0.5 }));
   const result = validateAnalysisResponse(validAnalysis({ topics }));
   assert(!result.ok);
 });
@@ -114,9 +133,37 @@ Deno.test('rejects an empty emotions array', () => {
   assert(!result.ok);
 });
 
-Deno.test('accepts topics/tools_mentioned empty arrays (not required to be non-empty)', () => {
-  const result = validateAnalysisResponse(validAnalysis({ topics: [], tools_mentioned: [] }));
+Deno.test('rejects non-canonical, combined, and duplicate topics', () => {
+  for (const name of ['productivity', 'Privacy/Security', 'Privacy, Security', 'AI reliability']) {
+    assert(!validateAnalysisResponse(validAnalysis({ topics: [{ name, relevance: 0.5 }] })).ok);
+  }
+  assert(!validateAnalysisResponse(validAnalysis({
+    topics: [{ name: 'Privacy', relevance: 0.8 }, { name: 'Privacy', relevance: 0.6 }],
+  })).ok);
+});
+
+Deno.test('accepts empty tools_mentioned arrays while topics remain required', () => {
+  const result = validateAnalysisResponse(validAnalysis({ tools_mentioned: [] }));
   assert(result.ok);
+});
+
+Deno.test('enforces AI Sentiment category and score compatibility', () => {
+  assert(validateAnalysisResponse(validAnalysis({ sentiment: 'positive', sentiment_score: 0.1 })).ok);
+  assert(validateAnalysisResponse(validAnalysis({ sentiment: 'negative', sentiment_score: -0.1 })).ok);
+  assert(validateAnalysisResponse(validAnalysis({ sentiment: 'neutral', sentiment_score: 0.1 })).ok);
+  assert(validateAnalysisResponse(validAnalysis({ sentiment: 'mixed', sentiment_score: 0 })).ok);
+  assert(!validateAnalysisResponse(validAnalysis({ sentiment: 'positive', sentiment_score: 0 })).ok);
+  assert(!validateAnalysisResponse(validAnalysis({ sentiment: 'negative', sentiment_score: 0 })).ok);
+  assert(!validateAnalysisResponse(validAnalysis({ sentiment: 'neutral', sentiment_score: 0.2 })).ok);
+});
+
+Deno.test('prompt defines AI Sentiment, the canonical topic taxonomy, and tool stance', () => {
+  const prompt = buildPrompt('OpenAI released a new model.', 'en');
+  assert(prompt.includes('AI Sentiment is the author'));
+  assert(prompt.includes('OpenAI released a new model.'));
+  assert(prompt.includes(ALLOWED_TOPICS.join(', ')));
+  assert(prompt.includes('not_applicable'));
+  assert(!prompt.includes('Analyse the sentiment of exactly one'));
 });
 
 Deno.test('callFoundry surfaces malformed JSON from a mocked Foundry response', async () => {

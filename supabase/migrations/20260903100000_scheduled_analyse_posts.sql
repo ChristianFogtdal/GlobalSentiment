@@ -6,8 +6,10 @@
 -- of Bluesky ingestion.
 --
 -- Prerequisite: analyse-posts must already be deployed and its secrets
--- (AZURE_FOUNDRY_*, LLM_PROMPT_VERSION, LLM_PROCESSING_ENABLED=enabled,
--- LLM_BATCH_SIZE, INGESTION_SECRET) already configured before this schedule
+-- (AZURE_FOUNDRY_*, LLM_PROCESSING_ENABLED=enabled, LLM_BATCH_SIZE,
+-- INGESTION_SECRET) already configured, and the authoritative active prompt
+-- version already set via public.app_settings (see
+-- 20260904090000_active_prompt_version_contract.sql), before this schedule
 -- starts firing, otherwise every run will short-circuit with an error/skip
 -- response (no post is selected and no Foundry call is made in that case).
 --

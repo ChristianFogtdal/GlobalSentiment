@@ -55,7 +55,7 @@ function mockFetchSuccess() {
     sentiment: 'positive',
     sentiment_score: 0.5,
     emotions: [{ name: 'excitement', intensity: 0.7 }],
-    topics: [{ name: 'productivity', relevance: 0.6 }],
+    topics: [{ name: 'Productivity', relevance: 0.6 }],
     tools_mentioned: ['Copilot'],
     ai_tooling_stance: 'positive',
     confidence: 0.8,
@@ -133,7 +133,7 @@ Deno.test('a batch loop continues past an individual failed post to complete the
     if (callIndex === 2) return Promise.resolve(new Response('server error', { status: 500 }));
     const analysis = {
       sentiment: 'neutral', sentiment_score: 0, emotions: [{ name: 'neutral', intensity: 0.5 }],
-      topics: [], tools_mentioned: [], ai_tooling_stance: 'not_applicable', confidence: 0.7,
+      topics: [{ name: 'Capabilities', relevance: 0.5 }], tools_mentioned: [], ai_tooling_stance: 'not_applicable', confidence: 0.7,
       rationale: 'Grounded rationale.',
     };
     return Promise.resolve(

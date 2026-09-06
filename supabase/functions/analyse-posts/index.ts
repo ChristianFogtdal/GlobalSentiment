@@ -20,21 +20,35 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = { 'Content-Type': 'application/json' };
 
-const ALLOWED_SENTIMENTS = ['positive', 'negative', 'neutral', 'mixed'] as const;
-const ALLOWED_STANCES = ['positive', 'negative', 'neutral', 'mixed', 'not_applicable'] as const;
-const ALLOWED_EMOTIONS = [
-  'excitement', 'optimism', 'trust', 'curiosity', 'surprise',
-  'concern', 'frustration', 'fear', 'disappointment', 'anger', 'neutral',
+export const ALLOWED_SENTIMENTS = ['positive', 'negative', 'neutral', 'mixed'] as const;
+export const ALLOWED_STANCES = ['positive', 'negative', 'neutral', 'mixed', 'not_applicable'] as const;
+export const ALLOWED_EMOTIONS = [
+  'excitement', 'optimism', 'trust', 'curiosity', 'admiration', 'relief',
+  'neutral', 'surprise', 'confusion', 'concern', 'skepticism', 'uncertainty',
+  'frustration', 'disappointment', 'fear', 'anger', 'awe', 'hype', 'doubt', 'urgency',
+] as const;
+export const ALLOWED_TOPICS = [
+  'Reliability', 'Accuracy', 'Quality', 'Performance', 'Capabilities', 'Innovation',
+  'Safety', 'Security', 'Privacy', 'Trust', 'Transparency', 'Explainability', 'Bias',
+  'Fairness', 'Automation', 'Productivity', 'Efficiency', 'Usability', 'Accessibility',
+  'Personalization', 'Integration', 'Deployment', 'Scalability', 'Availability',
+  'Compatibility', 'Cost', 'Pricing', 'Business Value', 'ROI', 'Competition',
+  'Market Adoption', 'Economic Impact', 'Employment Impact', 'Regulation', 'Governance',
+  'Ethics', 'Copyright', 'Digital Rights', 'Public Opinion', 'Political Impact',
+  'Misinformation', 'Education', 'Learning', 'Research', 'Healthcare',
+  'Environmental Impact', 'Open Source', 'Community', 'Risk', 'Opportunity', 'Other',
 ] as const;
 
 const MAX_RATIONALE_LENGTH = 600;
-const MAX_TOPICS = 10;
+const MIN_TOPICS = 1;
+const MAX_TOPICS = 3;
 const MAX_EMOTIONS = ALLOWED_EMOTIONS.length;
 const MAX_TOOLS_MENTIONED = 20;
 const MAX_TOOL_NAME_LENGTH = 80;
 
 type Sentiment = typeof ALLOWED_SENTIMENTS[number];
 type Stance = typeof ALLOWED_STANCES[number];
+type Topic = typeof ALLOWED_TOPICS[number];
 
 interface EmotionEntry { name: string; intensity: number }
 interface TopicEntry { name: string; relevance: number }
@@ -72,6 +86,13 @@ export function validateAnalysisResponse(payload: unknown): { ok: true; value: V
   if (!isFiniteNumberInRange(candidate.sentiment_score, -1, 1)) {
     return { ok: false, error: 'Invalid or missing sentiment_score' };
   }
+  if (
+    (candidate.sentiment === 'positive' && candidate.sentiment_score <= 0) ||
+    (candidate.sentiment === 'negative' && candidate.sentiment_score >= 0) ||
+    (candidate.sentiment === 'neutral' && Math.abs(candidate.sentiment_score) > 0.1)
+  ) {
+    return { ok: false, error: 'sentiment_score is incompatible with sentiment' };
+  }
   if (!Array.isArray(candidate.emotions) || candidate.emotions.length === 0 || candidate.emotions.length > MAX_EMOTIONS) {
     return { ok: false, error: 'Invalid or missing emotions array' };
   }
@@ -88,15 +109,20 @@ export function validateAnalysisResponse(payload: unknown): { ok: true; value: V
     emotions.push({ name: emotionEntry.name, intensity: emotionEntry.intensity });
   }
 
-  if (!Array.isArray(candidate.topics) || candidate.topics.length > MAX_TOPICS) {
+  if (!Array.isArray(candidate.topics) || candidate.topics.length < MIN_TOPICS || candidate.topics.length > MAX_TOPICS) {
     return { ok: false, error: 'Invalid topics array' };
   }
   const topics: TopicEntry[] = [];
+  const topicNames = new Set<string>();
   for (const entry of candidate.topics) {
     if (typeof entry !== 'object' || entry === null) return { ok: false, error: 'Invalid topic entry shape' };
     const topicEntry = entry as Record<string, unknown>;
-    if (!isNonEmptyString(topicEntry.name, 60)) return { ok: false, error: 'Invalid topic name' };
+    if (typeof topicEntry.name !== 'string' || !ALLOWED_TOPICS.includes(topicEntry.name as Topic)) {
+      return { ok: false, error: `Invalid topic name: ${String(topicEntry.name)}` };
+    }
+    if (topicNames.has(topicEntry.name)) return { ok: false, error: `Duplicate topic name: ${topicEntry.name}` };
     if (!isFiniteNumberInRange(topicEntry.relevance, 0, 1)) return { ok: false, error: 'Invalid topic relevance' };
+    topicNames.add(topicEntry.name);
     topics.push({ name: topicEntry.name, relevance: topicEntry.relevance });
   }
 
@@ -159,12 +185,13 @@ const RESPONSE_JSON_SCHEMA = {
       },
       topics: {
         type: 'array',
+        minItems: MIN_TOPICS,
         maxItems: MAX_TOPICS,
         items: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            name: { type: 'string' },
+            name: { type: 'string', enum: ALLOWED_TOPICS },
             relevance: { type: 'number', minimum: 0, maximum: 1 },
           },
           required: ['name', 'relevance'],
@@ -183,27 +210,36 @@ const RESPONSE_JSON_SCHEMA = {
   },
 };
 
-function buildPrompt(postText: string, originalLanguage: string | null) {
+export function buildPrompt(postText: string, originalLanguage: string | null) {
   const languageNote = originalLanguage ? `Original language tag: ${originalLanguage}.` : 'Original language tag: unknown.';
   return [
-    'Analyse the sentiment of exactly one social media post about AI. ' +
+    'Analyse exactly one social media post about AI. ' +
       'Ground every field only in the supplied post text; do not speculate beyond it.',
     languageNote,
     `Post text: """${postText}"""`,
     '',
-    'Follow these rules precisely when producing sentiment_score:',
-    '- sentiment_score is on a continuous scale from -1.0 (extremely negative) to 1.0 (extremely positive), with 0.0 meaning perfectly neutral/no sentiment.',
+    'AI Sentiment is the author’s expressed view of the AI technology, company, model, deployment, or AI-related development discussed. ' +
+      'It is not generic wording polarity or overall mood. Ignore incidental positive or negative wording.',
+    '- positive: endorsement or favourable evaluation of the AI subject (for example, "The benchmark results are amazing.").',
+    '- negative: criticism of, or concern about harm from, the AI subject (for example, "AI companies are violating privacy.").',
+    '- neutral: factual reporting without an evaluative position (for example, "OpenAI released a new model.").',
+    '- mixed: material positive and negative views of the AI subject (for example, "The model is impressive but could threaten jobs.").',
+    'Follow these rules precisely when producing the AI Sentiment score:',
+    '- sentiment_score is on a continuous scale from -1.0 (extremely negative AI Sentiment) to 1.0 (extremely positive AI Sentiment), with 0.0 meaning neutral.',
     '- sentiment_score MUST be directionally consistent with the categorical sentiment field: ' +
       'if sentiment is "negative", sentiment_score MUST be less than 0; if sentiment is "positive", sentiment_score MUST be greater than 0; ' +
       'if sentiment is "neutral", sentiment_score MUST be close to 0.0 (roughly -0.1 to 0.1); if sentiment is "mixed", sentiment_score reflects the net balance and may be anywhere in range, including close to 0.0.',
     '- Do not default neutral or purely factual/informational posts to a midpoint of a 0-to-1 scale. The scale is -1 to 1, and "neutral" means near zero, not near 0.5.',
     '- Sarcastic or ironic posts must be scored by their real intended meaning, not the literal surface words.',
     '',
-    'Follow these rules precisely when producing topics vs tools_mentioned:',
+    'Emotion describes affect, and Topics describe subject themes; neither determines AI Sentiment.',
+    `Topics must contain 1-3 unique canonical labels selected only from this taxonomy, in this exact spelling: ${ALLOWED_TOPICS.join(', ')}.`,
+    '- Select separate labels for the actual subject themes. Do not use qualifiers, sentences, product/tool names, combined concepts, or separators.',
+    '- Use Other only when no specific taxonomy label applies. Omit semantically redundant labels.',
+    'Follow these rules precisely when producing topics, tools_mentioned, and ai_tooling_stance:',
     '- tools_mentioned is the exclusive place for concrete AI product/tool names (e.g. "ChatGPT", "Copilot", "Claude", "Gemini").',
-    '- topics MUST describe discussion aspects only (e.g. pricing, code quality, productivity, privacy, employment impact, usage limits, reliability, learning). ' +
-      'Never repeat a tool or product name as a topic entry. If a post is only about a tool itself with no other discussion aspect, return fewer topics rather than duplicating the tool name.',
-    '- If the post does not mention any AI product/tool by name, tools_mentioned MUST be an empty array and ai_tooling_stance MUST be "not_applicable".',
+    '- ai_tooling_stance records an explicit evaluative stance toward a named AI product/tool only. It is independently grounded in the text and never inferred from AI Sentiment.',
+    '- Use ai_tooling_stance "not_applicable" when no named product/tool is evaluated, including factual product mentions and posts about AI generally.',
   ].join('\n');
 }
 
@@ -441,6 +477,36 @@ export async function runBatch(
   return { selected, completed, failed, scanned, results };
 }
 
+// Resolves the single authoritative active V2 prompt version from the
+// database (public.get_active_prompt_version(), see migration
+// 20260904090000_active_prompt_version_contract.sql) rather than treating
+// the LLM_PROMPT_VERSION Edge Function secret as an independent, potentially
+// diverging source of truth.
+//
+// LLM_PROMPT_VERSION is retained only as a transitional deployment-safety
+// check: if it is still set, it must agree with the database value, or the
+// worker fails closed (does not claim or process any posts) rather than
+// silently processing under one version while the dashboard/Data Review
+// display another. Once all environments have migrated, the env var can be
+// removed entirely and this check becomes a no-op.
+export async function resolveActivePromptVersion(
+  supabase: ReturnType<typeof createClient>,
+): Promise<{ promptVersion: string } | { error: string }> {
+  const { data, error } = await supabase.rpc('get_active_prompt_version');
+  if (error) return { error: `Failed to resolve active prompt version: ${error.message}` };
+  const dbPromptVersion = typeof data === 'string' ? data : null;
+  if (!dbPromptVersion) return { error: 'Active prompt version is not configured in the database' };
+
+  const legacyEnvPromptVersion = Deno.env.get('LLM_PROMPT_VERSION');
+  if (legacyEnvPromptVersion && legacyEnvPromptVersion !== dbPromptVersion) {
+    return {
+      error: `Prompt version mismatch: LLM_PROMPT_VERSION ('${legacyEnvPromptVersion}') does not match the authoritative database value ('${dbPromptVersion}'). Refusing to process to avoid a worker/dashboard divergence.`,
+    };
+  }
+
+  return { promptVersion: dbPromptVersion };
+}
+
 async function handleRequest(request: Request): Promise<Response> {
   if (request.method !== 'POST' || request.headers.get('x-ingestion-secret') !== Deno.env.get('INGESTION_SECRET')) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
@@ -454,11 +520,9 @@ async function handleRequest(request: Request): Promise<Response> {
   const apiKey = Deno.env.get('AZURE_FOUNDRY_API_KEY');
   const deployment = Deno.env.get('AZURE_FOUNDRY_DEPLOYMENT');
   const model = Deno.env.get('AZURE_FOUNDRY_MODEL');
-  const promptVersion = Deno.env.get('LLM_PROMPT_VERSION');
-  if (!endpoint || !apiKey || !deployment || !model || !promptVersion) {
+  if (!endpoint || !apiKey || !deployment || !model) {
     return new Response(JSON.stringify({ error: 'Foundry configuration is missing' }), { status: 500, headers: corsHeaders });
   }
-  const config: FoundryConfig = { endpoint, apiKey, deployment, model, promptVersion };
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -466,6 +530,13 @@ async function handleRequest(request: Request): Promise<Response> {
     return new Response(JSON.stringify({ error: 'Supabase configuration is missing' }), { status: 500, headers: corsHeaders });
   }
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+  const promptVersionResult = await resolveActivePromptVersion(supabase);
+  if ('error' in promptVersionResult) {
+    return new Response(JSON.stringify({ error: promptVersionResult.error }), { status: 500, headers: corsHeaders });
+  }
+  const promptVersion = promptVersionResult.promptVersion;
+  const config: FoundryConfig = { endpoint, apiKey, deployment, model, promptVersion };
 
   let requestedUri: string | null = null;
   try {
