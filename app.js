@@ -12,8 +12,8 @@ const TRANSIENT_REQUEST_RETRY_DELAY_MS = 300;
 const bluesky = { posts: [], isLoading: false, error: '', totalCount: 0 };
 const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 // Dedicated dataset for the main Dashboard/map view, sourced from the
-// server-aggregated public.get_dashboard_v2() RPC (Foundry, active prompt
-// version only). Fully independent from `bluesky`/`blueskyV2`, which
+// server-aggregated public.get_dashboard_v2() RPC (all completed Foundry
+// prompt versions). Fully independent from `bluesky`/`blueskyV2`, which
 // continue to back the Data review tab's Legacy/V2 toggle.
 //   - aggregate: the full-history totals/topics/emotions/trend payload.
 //   - recent: the bounded recent-post feed (labelled as such in the UI);
@@ -237,38 +237,6 @@ async function requestArchive(path, options = {}, retryTransientServerError = fa
   return { data, totalCount };
 }
 
-// Short-lived cache for the single authoritative active prompt version
-// (public.get_active_prompt_version(), see
-// supabase/migrations/20260904090000_active_prompt_version_contract.sql).
-// Data Review filters every V2 request by this value so results from
-// superseded prompt versions never surface, matching the dashboard's
-// get_dashboard_v2() scoping. Re-fetched at most once per refresh cycle
-// rather than on every keystroke/page change.
-let activePromptVersionCache = { value: null, fetchedAt: 0 };
-const ACTIVE_PROMPT_VERSION_CACHE_MS = 60 * 1000;
-
-async function getActivePromptVersion() {
-  const now = Date.now();
-  if (activePromptVersionCache.value && now - activePromptVersionCache.fetchedAt < ACTIVE_PROMPT_VERSION_CACHE_MS) {
-    return activePromptVersionCache.value;
-  }
-  try {
-    const { data } = await requestArchive('rpc/get_active_prompt_version', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
-    });
-    if (typeof data === 'string' && data) {
-      activePromptVersionCache = { value: data, fetchedAt: now };
-      return data;
-    }
-  } catch (error) {
-    console.error('Failed to resolve active prompt version:', error);
-  }
-  // Fail open to "no filter" here rather than blocking Data Review entirely;
-  // completed_post_analyses_v2 already restricts to status = 'complete'.
-  return activePromptVersionCache.value;
-}
 /**
  * Load completed post analyses from Supabase
  * Queries completed_post_analyses view joined with bluesky_posts
@@ -473,7 +441,7 @@ async function loadReviewData(page = reviewPage, searchTerm = reviewSearchTerm) 
 }
 
 /**
- * Load the compact, prompt-scoped dashboard aggregate (public.get_dashboard_v2())
+ * Load the compact, all-prompt-version dashboard aggregate (public.get_dashboard_v2())
  * for the main Dashboard/map view: one bounded server response instead of
  * paginating through the full completed_post_analyses_v2 archive. Full-history
  * metrics and trends remain historically accurate because aggregation happens

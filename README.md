@@ -53,8 +53,8 @@ select cron.schedule(
 This function processes Bluesky posts through a Foundry deployment that you select and deploy
 yourself in Azure AI Foundry. The code does not choose, deploy, or infer a model, endpoint, or API
 version, and the browser never sees Foundry credentials or endpoints. Results are persisted to
-`post_analyses_v2`, which is isolated from the existing `post_analyses` / `completed_post_analyses`
-legacy tables and is not exposed to the dashboard.
+`post_analyses_v2`, which is isolated from the existing `post_analyses` legacy table. Completed V2
+results are exposed to the dashboard through narrowly scoped read-only views and aggregate RPCs.
 
 Configure these secrets on the function before invoking it or enabling its schedule:
 
@@ -68,17 +68,20 @@ Configure these secrets on the function before invoking it or enabling its sched
   configured value)
 
 The active V2 prompt version is **not** an independent function secret. It is resolved at runtime
-from the single authoritative database source, `public.get_active_prompt_version()` (see
-`supabase/migrations/20260904090000_active_prompt_version_contract.sql`), which both this worker
-and the dashboard read. Update the active prompt version by updating that single database row
+by the worker from the single authoritative database source, `public.get_active_prompt_version()`
+(see `supabase/migrations/20260904090000_active_prompt_version_contract.sql`). Update the active
+prompt version by updating that single database row
 (`update public.app_settings set value = '...' where key = 'active_prompt_version'`); the
 `(post_uri, prompt_version)` uniqueness constraint then creates forward-only analyses without
 changing historical V2 rows.
 
+The dashboard and V2 Data Review include all completed prompt versions to preserve historical
+continuity. Each V2 review row displays its prompt version for auditability; analytics across
+versions must account for any prompt-contract changes.
+
 `LLM_PROMPT_VERSION` may still be set on the function as a transitional legacy value during
 deployment migration. If present, it is validated against the database value on every invocation
-and the worker fails closed (claims and processes nothing) on any mismatch, so the worker can never
-process one prompt version while the dashboard displays another. Remove this env var entirely once
+and the worker fails closed (claims and processes nothing) on any mismatch. Remove this env var entirely once
 all environments have migrated to the database-resolved value.
 
 ### V2 AI-Sentiment taxonomy contract
@@ -162,15 +165,14 @@ manual verification surface, independent of the main Dashboard/map:
   via a "View" details expander. `ai_tooling_stance = 'not_applicable'` is labeled "Not applicable" as
   Product/Tool Stance in the UI.
 
-### Main Dashboard/map: compact, prompt-scoped aggregate (not a full-archive download)
+### Main Dashboard/map: compact, all-version aggregate (not a full-archive download)
 
 The main Dashboard/map aggregation (`selectedData()` / `archiveDashboardData()`) is sourced from a
 single server-side RPC, `public.get_dashboard_v2()` (see
 `supabase/migrations/20260904091500_dashboard_v2_aggregate_rpc.sql`), loaded via `loadDashboardV2()`.
 The browser no longer paginates through the full `completed_post_analyses_v2` archive to build the
 dashboard: the RPC computes full-history totals, topic/emotion/stance aggregates, and hourly trend
-buckets in SQL, scoped to `status = 'complete'` and the single authoritative active prompt version
-(`public.get_active_prompt_version()`), and returns them in one compact response alongside a bounded
+buckets in SQL across all `status = 'complete'` V2 prompt versions, and returns them in one compact response alongside a bounded
 recent-post feed (`dashboardV2.recent`, currently the 200 most recently processed rows). Full-history
 metrics and the trend chart therefore remain historically accurate even though the browser never
 downloads the full archive — only Data Review does that, via its own paginated/searchable queries.
@@ -180,9 +182,10 @@ Topic-filtered trend views (the trend chart's topic dropdown) call a companion R
 "all topics" trend is already included in the main aggregate.
 
 The Data review tab's Legacy/V2 toggle is unaffected by this and remains available for
-side-by-side comparison and ongoing spot-checking of individual V2 rows — it uses its own separate
+side-by-side comparison and ongoing spot-checking of individual V2 rows — it includes all completed
+prompt versions and uses its own separate
 `bluesky` (legacy) / `blueskyV2` (V2) state, distinct from the dashboard's `dashboardV2` state, and
-now also filters its V2 queries to the same active prompt version as the dashboard.
+does not filter V2 queries to only the active prompt version.
 
 
 See `DEPLOYMENT_SECRETS.txt` at the repo root for the full names-only secret template. Do not
