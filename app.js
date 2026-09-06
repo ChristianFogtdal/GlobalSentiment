@@ -20,14 +20,16 @@ const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 //     never treated as, or merged into, a pretend full archive.
 const dashboardV2 = { aggregate: null, recent: [], isLoading: false, error: '', totalCount: 0, lastLoadedAt: null };
 const REVIEW_PAGE_SIZE = 100;
-let reviewPage = 1;
-let reviewSource = 'v2'; // 'legacy' | 'v2' -- Latest model (Foundry) is the default on open
-let expandedReviewRow = null; // post_uri of the record whose analysis details are open
-let reviewSearchTerm = ''; // server-side search term, applied across the full archive
 // Monotonically increasing request counters, used to discard stale/out-of-order
 // responses (e.g. an older keystroke's request resolving after a newer one),
 // which would otherwise overwrite the feed with results for a different search term.
-let reviewRequestSeq = { legacy: 0, v2: 0 };
+const review = {
+  source: 'v2', // 'legacy' | 'v2' -- Latest model (Foundry) is the default on open
+  page: 1,
+  searchTerm: '',
+  expandedUri: null,
+  requestSeq: { legacy: 0, v2: 0 },
+};
 let activeView = 'dashboard';
 
 // Utility functions
@@ -307,15 +309,15 @@ const reviewSources = {
   },
 };
 
-async function loadReviewArchive(source, page = reviewPage, searchTerm = reviewSearchTerm) {
+async function loadReviewArchive(source, page = review.page, searchTerm = review.searchTerm) {
   const descriptor = reviewSources[source];
-  const requestId = ++reviewRequestSeq[source];
+  const requestId = ++review.requestSeq[source];
   const { state } = descriptor;
   try {
     state.isLoading = true;
     if (descriptor.afterLoad) descriptor.afterLoad();
     renderDataReview();
-    reviewPage = page;
+    review.page = page;
 
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
@@ -332,7 +334,7 @@ async function loadReviewArchive(source, page = reviewPage, searchTerm = reviewS
       Boolean(searchFilter)
     );
 
-    if (requestId !== reviewRequestSeq[source]) return;
+    if (requestId !== review.requestSeq[source]) return;
     state.totalCount = totalCount;
     if (!analyses || analyses.length === 0) {
       state.error = searchTerm.trim()
@@ -344,11 +346,11 @@ async function loadReviewArchive(source, page = reviewPage, searchTerm = reviewS
       state.error = '';
     }
   } catch (error) {
-    if (requestId !== reviewRequestSeq[source]) return;
+    if (requestId !== review.requestSeq[source]) return;
     state.error = `Failed to load ${descriptor.errorLabel}: ${error.message}`;
     console.error(`${descriptor.errorLabel} load error:`, error);
   } finally {
-    if (requestId === reviewRequestSeq[source]) {
+    if (requestId === review.requestSeq[source]) {
       state.isLoading = false;
       if (descriptor.afterLoad) descriptor.afterLoad();
       renderDataReview();
@@ -356,17 +358,17 @@ async function loadReviewArchive(source, page = reviewPage, searchTerm = reviewS
   }
 }
 
-function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
+function loadArchive(page = review.page, searchTerm = review.searchTerm) {
   return loadReviewArchive('legacy', page, searchTerm);
 }
 
-function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
+function loadArchiveV2(page = review.page, searchTerm = review.searchTerm) {
   return loadReviewArchive('v2', page, searchTerm);
 }
 
 /** Dispatch archive loading to the currently selected review source. */
-async function loadReviewData(page = reviewPage, searchTerm = reviewSearchTerm) {
-  if (reviewSource === 'v2') {
+async function loadReviewData(page = review.page, searchTerm = review.searchTerm) {
+  if (review.source === 'v2') {
     await loadArchiveV2(page, searchTerm);
   } else {
     await loadArchive(page, searchTerm);
@@ -764,7 +766,7 @@ function toFeedRecord(post, source) {
 }
 
 function renderDataReview() {
-  if (reviewSource === 'v2') {
+  if (review.source === 'v2') {
     renderFeed(blueskyV2, 'v2', 'V2 analyzed posts', 'No completed V2 analyses available yet.', 'Loading persisted V2 sentiment analysis from Supabase...');
   } else {
     renderFeed(bluesky, 'legacy', 'archived posts', 'No analyzed posts available yet. The archive will populate when analysis completes.', 'Loading persisted sentiment analysis from Supabase...');
@@ -792,7 +794,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
     list.innerHTML = `<p class="empty error"><strong>⚠️ ${escapeHtml(archiveState.error)}</strong></p>`;
     count.textContent = 'Error';
     if (pagination) pagination.innerHTML = '';
-    if (searchStatus) searchStatus.textContent = reviewSearchTerm.trim() ? '0 hits' : '';
+    if (searchStatus) searchStatus.textContent = review.searchTerm.trim() ? '0 hits' : '';
     return;
   }
 
@@ -806,20 +808,20 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
 
   const totalCount = archiveState.totalCount || archiveState.posts.length;
   const totalPages = Math.max(1, Math.ceil(totalCount / REVIEW_PAGE_SIZE));
-  const firstRow = (reviewPage - 1) * REVIEW_PAGE_SIZE + 1;
+  const firstRow = (review.page - 1) * REVIEW_PAGE_SIZE + 1;
   const lastRow = firstRow + archiveState.posts.length - 1;
 
   count.textContent = `${number.format(totalCount)} ${countLabel}`;
   if (pagination) {
-    pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${reviewPage <= 1 ? 'disabled' : ''}>Previous</button><span>Showing ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${reviewPage} of ${totalPages}</span><button type="button" id="reviewNextPage" ${reviewPage >= totalPages ? 'disabled' : ''}>Next</button>`;
+    pagination.innerHTML = `<button type="button" id="reviewPrevPage" ${review.page <= 1 ? 'disabled' : ''}>Previous</button><span>Showing ${number.format(firstRow)}-${number.format(lastRow)} of ${number.format(totalCount)} · Page ${review.page} of ${totalPages}</span><button type="button" id="reviewNextPage" ${review.page >= totalPages ? 'disabled' : ''}>Next</button>`;
     const prevButton = $('reviewPrevPage');
     const nextButton = $('reviewNextPage');
-    if (prevButton) prevButton.addEventListener('click', () => loadReviewData(reviewPage - 1));
-    if (nextButton) nextButton.addEventListener('click', () => loadReviewData(reviewPage + 1));
+    if (prevButton) prevButton.addEventListener('click', () => loadReviewData(review.page - 1));
+    if (nextButton) nextButton.addEventListener('click', () => loadReviewData(review.page + 1));
   }
 
   if (searchStatus) {
-    searchStatus.textContent = reviewSearchTerm.trim()
+    searchStatus.textContent = review.searchTerm.trim()
       ? `${number.format(totalCount)} hit${totalCount === 1 ? '' : 's'}`
       : '';
   }
@@ -827,7 +829,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
   const records = archiveState.posts.map((post) => toFeedRecord(post, source));
 
   list.innerHTML = records.map((record) => {
-    const isExpanded = expandedReviewRow === record.uri;
+    const isExpanded = review.expandedUri === record.uri;
     const provenanceRows = Object.entries({
       ...(record.source === 'v2' ? { 'AI Sentiment score': record.provenance.rawScore } : {}),
       Confidence: `${(record.confidence * 100).toFixed(0)}%`,
@@ -873,7 +875,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
   list.querySelectorAll('.review-details-toggle').forEach((button) => {
     button.addEventListener('click', () => {
       const uri = button.dataset.uri;
-      expandedReviewRow = expandedReviewRow === uri ? null : uri;
+      review.expandedUri = review.expandedUri === uri ? null : uri;
       renderDataReview();
     });
   });
@@ -889,7 +891,7 @@ function setActiveView(view) {
     tab.setAttribute('aria-selected', String(isActive));
   });
   if (view === 'data-review') {
-    if (reviewSource === 'v2' && !blueskyV2.posts.length && !blueskyV2.isLoading && !blueskyV2.error) {
+    if (review.source === 'v2' && !blueskyV2.posts.length && !blueskyV2.isLoading && !blueskyV2.error) {
       loadArchiveV2(1);
     } else {
       renderDataReview();
@@ -933,10 +935,10 @@ document.getElementById('trendTopic')?.addEventListener('change', (event) => {
 });
 
 document.getElementById('reviewSource')?.addEventListener('change', (event) => {
-  reviewSource = event.target.value;
-  reviewPage = 1;
-  expandedReviewRow = null;
-  reviewSearchTerm = '';
+  review.source = event.target.value;
+  review.page = 1;
+  review.expandedUri = null;
+  review.searchTerm = '';
   const searchInput = $('reviewSearch');
   if (searchInput) searchInput.value = '';
   loadReviewData(1);
@@ -952,8 +954,9 @@ document.getElementById('reviewSearch')?.addEventListener('input', (event) => {
   if (searchStatus && value.trim()) searchStatus.textContent = 'Searching…';
   window.clearTimeout(reviewSearchDebounce);
   reviewSearchDebounce = window.setTimeout(() => {
-    reviewSearchTerm = value;
-    loadReviewData(1, reviewSearchTerm);
+    review.searchTerm = value;
+    review.expandedUri = null;
+    loadReviewData(1, review.searchTerm);
   }, REVIEW_SEARCH_DEBOUNCE_MS);
 });
 
@@ -973,8 +976,8 @@ async function init() {
   // source is currently toggled on.
   setInterval(() => {
     loadDashboardV2();
-    if (reviewSource === 'legacy') loadArchive(reviewPage);
-    if (reviewSource === 'v2') loadArchiveV2(reviewPage);
+    if (review.source === 'legacy') loadArchive(review.page);
+    if (review.source === 'v2') loadArchiveV2(review.page);
   }, ARCHIVE_REFRESH_MS);
 
   // Keep the "Updated Xm ago" freshness label current between archive reloads.
