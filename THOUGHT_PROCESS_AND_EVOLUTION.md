@@ -26,7 +26,7 @@ The prototype established an important design choice that remains: the dashboard
 
 ### 2. Separate collection from presentation
 
-The next step introduced Supabase as a persistent archive and Bluesky as the public data source. A scheduled ingestion function searches a fixed set of AI-related terms every 15 minutes, retains the post's AT URI as its identity, and upserts records into `bluesky_posts`. This narrowed the operational focus from all global conversation to AI-related public conversation, including AI coding, products, research, safety, regulation, jobs, and social impact.
+The next step introduced Supabase as a persistent archive and Bluesky as the public data source. A scheduled ingestion function searches a fixed set of AI-related terms, retains the post's AT URI as its identity, and upserts records into `bluesky_posts`. This narrowed the operational focus from all global conversation to AI-related public conversation, including AI coding, products, research, safety, regulation, jobs, and social impact.
 
 Deduplication, source links, publication times, and original-language tags were added because the project values verifiability and because repeated searches should not distort apparent conversation volume. The browser now reads the archive through Supabase rather than calling Bluesky directly, and the Data review view lets users inspect the underlying posts and analysis fields.
 
@@ -34,65 +34,65 @@ Deduplication, source links, publication times, and original-language tags were 
 
 The project then moved toward persisted, server-side analysis. The architectural rationale was sound: provider credentials stay out of the browser, one result can be reused by all viewers, analysis has an audit trail, and validation can prevent malformed results from reaching the UI.
 
-Some earlier project documentation describes a fully integrated LLM pipeline based on the legacy `post_analyses` and `completed_post_analyses` objects. The current implementation should be understood more precisely:
+The legacy keyword pipeline remains available for comparison, but the current implementation uses the Foundry V2 path for its public dashboard:
 
-- The live dashboard reads the legacy `completed_post_analyses` view and aggregates its completed results.
+- The live dashboard aggregates all completed rows from `post_analyses_v2` through server-side RPCs.
 - The scheduled `ingest-bluesky-search` function currently assigns its legacy fields with deterministic keyword rules when it archives a post.
-- The dashboard's current explanation is a metrics-based template, not a separate LLM generation call.
+- Data Review can switch between legacy and V2 completed-analysis views.
 
-This is a useful interim arrangement: the user-facing application remains a real archive-backed dashboard while the higher-risk model-enrichment work is kept out of the public path.
+This keeps the user-facing application archive-backed while retaining the legacy output for comparison and audit.
 
 ### 4. Add a guarded Azure Foundry proof slice
 
-The newest implementation is an additive `analyse-posts` Edge Function and the isolated `post_analyses_v2` schema. It is a deliberately small validation slice rather than a production replacement for the legacy path:
+The newest implementation is an additive `analyse-posts` Edge Function and the isolated `post_analyses_v2` schema:
 
-- It is manually invoked by a server-side caller and is disabled unless `LLM_PROCESSING_ENABLED=enabled`.
-- Each invocation selects and analyses at most one eligible post.
+- It is scheduled for server-side invocation and is disabled unless `LLM_PROCESSING_ENABLED=enabled`.
+- Each invocation sequentially analyzes up to the configured, capped batch size.
 - A unique `(post_uri, prompt_version)` constraint is claimed before the billable provider call, preventing duplicate analysis for the same prompt version.
 - Azure Foundry is asked for schema-constrained JSON containing sentiment, a $[-1, 1]$ score, emotions, topics, named AI tools, stance, confidence, and rationale.
 - The response is validated in code and stored with provider, deployment, model, prompt version, status, and timestamps.
-- V2 has no anonymous read access, is not scheduled, and is not wired to the dashboard.
+- The V2 base table remains service-role-only; its completed results are exposed through a narrow public review view and server-side dashboard aggregate RPCs.
 
-This reflects a shift from "make the dashboard intelligent" to "prove model behavior safely before the model affects the dashboard." The proof slice also preserves original-language metadata and uses a fixed emotion taxonomy, making future evaluation more controlled.
+This provides dashboard metrics from validated model output while preserving original-language metadata, provenance, and a fixed emotion taxonomy for audit and future evaluation.
 
 ## The decision logic behind the changes
 
 | Concern | Early response | Current direction |
 | --- | --- | --- |
 | Explainability | Display a score with topics and emotions | Keep source evidence, rationale, confidence, and qualified summaries alongside aggregates |
-| Speed of demonstration | Static data and keyword heuristics | Retain a working archive-backed UI while model work is validated separately |
-| Accuracy and nuance | Deterministic word matching | Evaluate Azure Foundry structured output against a constrained contract |
+| Speed of demonstration | Static data and keyword heuristics | Use server-side V2 aggregates while retaining legacy review data |
+| Accuracy and nuance | Deterministic word matching | Use Azure Foundry structured output validated against a constrained contract |
 | Trust and auditability | Immediate client-side calculation | Persist provenance, prompt version, model details, statuses, and source links server-side |
-| Cost and operational risk | No external model calls | One manually triggered, uniquely claimed model call per V2 invocation |
-| Privacy and access control | Aggregate public-content framing | Keep model credentials and V2 data server-only; expose the intended review data through the legacy public read path |
+| Cost and operational risk | No external model calls | Sequential, uniquely claimed Foundry calls with a configured batch cap |
+| Privacy and access control | Aggregate public-content framing | Keep model credentials and V2 base data server-only; expose only completed rows and aggregate data |
 
 ## Current product state
 
-Today, SentimentMap is best described as an **archive-backed AI-conversation mood dashboard with a separately validated LLM enrichment proof slice**.
+Today, SentimentMap is an **archive-backed AI-conversation dashboard using completed Azure Foundry V2 analyses for its public aggregates**.
 
-The dashboard supports time, emotion, and topic filtering; aggregates an overall mood score, confidence, topics, and emotion distribution; shows representative archived posts; and provides a paginated source-review table. It reads completed legacy analyses from Supabase and refreshes the archive periodically.
+The dashboard aggregates an overall AI-sentiment score, topics, emotions, and a topic-filtered hourly trend. Data Review provides server-side search, pagination, source switching, and per-row provenance. Dashboard and V2 Data Review include all completed prompt versions; each V2 review row identifies its own prompt version.
 
-The original PRD remains broader than the deployed UI. The current interface does not implement the planned geographic map, country drill-down, automated mood-shift detection, or a model-generated explanation. Those are product goals, not present capabilities. Likewise, Azure Foundry V2 results are intentionally isolated from dashboard aggregation until quality and integration decisions are made.
+The original PRD remains broader than the deployed UI. The current interface does not implement the planned geographic map, country drill-down, automated mood-shift detection, or a model-generated explanation. Those are product goals, not present capabilities.
 
 ## What the next evolution should prove
 
-The next milestone is not simply connecting V2 to the dashboard. It should first establish that the analysis is good enough and safe enough to influence aggregate public-facing metrics:
+The next milestone is strengthening the quality and operational controls around the V2 metrics:
 
 1. Build a representative human-labelled evaluation set, including multilingual, ambiguous, sarcastic, and mixed-sentiment posts.
 2. Measure the V2 output against agreed thresholds for sentiment, emotion, topic, stance, and confidence calibration.
 3. Decide how a $[-1, 1]$ V2 sentiment score maps to the dashboard's $[0, 100]$ mood scale, and document that mapping as a stable methodology.
-4. Define a migration and rollout path from the legacy analysis view to V2, including backfill, failure handling, reprocessing rules, and a dashboard-visible provenance label.
-5. Only then wire approved V2 results into aggregation, explanations, change detection, and eventually geographic analysis.
+4. Define retention and retirement criteria for the legacy analysis path, including failure handling and reprocessing rules.
+5. Evaluate future additions such as explanations, change detection, and geographic analysis against those controls.
 
 This order protects the original promise of the project: useful, inspectable insight rather than confident-looking but unverified sentiment scores.
 
 ## Evidence used
 
 - `global-mood-intelligence-prd.md`: product vision, six-layer scope, principles, responsible-AI constraints, and MVP.
-- `index.html` and `app.js`: the current dashboard features and its dependency on the legacy completed-analysis archive.
+- `index.html` and `app.js`: the current dashboard features and its dependency on V2 dashboard aggregate RPCs.
 - `supabase/functions/ingest-bluesky-search/index.ts`: scheduled Bluesky collection and deterministic legacy enrichment.
-- `supabase/functions/analyse-posts/index.ts` and `index.test.ts`: the manual, one-post Azure Foundry V2 worker and its response-contract tests.
+- `supabase/functions/analyse-posts/index.ts` and its tests: the scheduled Azure Foundry V2 worker and response-contract tests.
 - `supabase/migrations/20260902210000_post_analyses_v2.sql`: isolated V2 storage, access control, provenance, and uniqueness guarantees.
-- `README.md`: current operational boundary that V2 is manually invoked and not dashboard-wired.
+- `README.md`: current operational boundaries, dashboard scope, and V2 access rules.
 
 Some older root-level implementation reports describe a previous integrated LLM architecture. They are useful historical evidence of intent, but current code and the latest SentimentMap README take precedence for the present-state description above.

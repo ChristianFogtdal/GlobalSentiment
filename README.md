@@ -14,11 +14,9 @@ Open `http://localhost:4173`.
 
 ## Data and dependencies
 
-- The dashboard uses the demo dataset in `demo-data.js`.
-- The dashboard reads the shared historical archive from Supabase Postgres; it does not call Bluesky directly. A scheduled Supabase Edge Function searches public Bluesky posts every 15 minutes for the configured AI-coding keywords and writes matching posts to the archive.
+- The dashboard reads completed V2 analyses from Supabase Postgres; it does not call Bluesky directly. Scheduled ingestion collects public Bluesky posts, and the Foundry worker enriches them before they appear in dashboard aggregates.
 - The Bluesky AT URI is the primary key, so repeat searches do not add duplicate rows. Data review displays the full archived time series.
 - New ingested posts retain Bluesky's declared original-language tag (such as `en`, `es`, or `pt-BR`). Translation is not performed.
-- Leaflet, map tiles, and country boundary data are loaded from public CDNs at runtime.
 - See `global-mood-intelligence-prd.md` for the product scope and responsible-AI constraints.
 
 ## Scheduled Bluesky ingestion
@@ -128,15 +126,14 @@ with a sanitized `error_message`, and the batch continues to the next candidate 
 aborting. There is no automatic retry in this phase; failed rows are simply not reprocessed
 because they already occupy the `(post_uri, prompt_version)` unique slot.
 
-A cron schedule (see `supabase/migrations/20260903100000_scheduled_analyse_posts.sql`, named
-`analyse-posts-ai-sentiment`) fires every 15 minutes with an empty request body, matching the
-existing `ingest-bluesky-search` cadence. It reuses the same Vault-secret pattern
+A cron schedule (see `supabase/migrations/20260903140000_increase_analyse_posts_throughput.sql`,
+named `analyse-posts-ai-sentiment`) fires every 5 minutes with an empty request body. It reuses the same Vault-secret pattern
 (`bluesky_ingestion_secret`) for its `x-ingestion-secret` header. It can be paused independently of
 Bluesky ingestion with `select cron.unschedule('analyse-posts-ai-sentiment');`.
 
-There is **no automated daily/run cost cap** in this phase — Foundry spend is throttled solely by
-cron cadence (15 minutes) × batch size (default 10). If spend becomes a concern, unschedule the
-cron job manually or reduce `LLM_BATCH_SIZE`; a future phase should add an explicit cost/quota
+There is **no automated daily/run cost cap** — Foundry spend is throttled solely by
+cron cadence (5 minutes) × batch size (configured in `LLM_BATCH_SIZE`). If spend becomes a concern,
+unschedule the cron job manually or reduce `LLM_BATCH_SIZE`; a future phase should add an explicit cost/quota
 ledger before scaling batch size or cadence further.
 
 Invocation (manual or scheduled) requires a server-side scheduler/admin secret; it cannot be
@@ -155,8 +152,8 @@ The Data review tab has a **Source** toggle (Legacy / V2 (Foundry)) that switche
 the legacy `completed_post_analyses` view and this new `completed_post_analyses_v2` view. This is a
 manual verification surface, independent of the main Dashboard/map:
 
-- V2 rows are ordered by `processed_at desc, published_at desc` (most recently analyzed first),
-  distinct from the legacy tab's `created_at desc` ordering.
+- Both sources are ordered by `published_at desc`, so the review starts with the most recently
+  published posts regardless of when the pipeline analyzed them.
 - V2's canonical `sentiment_score` is `[-1, 1]`; the UI converts it to a 0-100 display score with
   `displayScore = round((sentiment_score + 1) * 50)` — the database itself performs no conversion.
 - Curated always-visible V2 columns: Published Date, AI Sentiment score, AI Sentiment, Tools Mentioned, Topics,
