@@ -7,7 +7,9 @@ const number = new Intl.NumberFormat('en-US');
 const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
-const bluesky = { posts: [], allPosts: [], isLoading: false, error: '', totalCount: 0 };
+const REVIEW_SEARCH_DEBOUNCE_MS = 400;
+const TRANSIENT_REQUEST_RETRY_DELAY_MS = 300;
+const bluesky = { posts: [], isLoading: false, error: '', totalCount: 0 };
 const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 // Dedicated dataset for the main Dashboard/map view, sourced from the
 // server-aggregated public.get_dashboard_v2() RPC (Foundry, active prompt
@@ -47,10 +49,6 @@ function escapeHtml(value) {
   const element = document.createElement('span');
   element.textContent = value;
   return element.innerHTML;
-}
-function matchesTerm(text, term) {
-  const escapedTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`\\b${escapedTerm}\\b`, 'i').test(text);
 }
 function formatTimestamp(value) {
   return new Date(value).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' }) + ' UTC';
@@ -100,47 +98,6 @@ function updateFreshnessLabel(lastRefreshTime, sampleCount) {
   if (!label) return;
   const safeCount = Number.isFinite(Number(sampleCount)) ? number.format(Number(sampleCount)) : '0';
   label.textContent = `${formatTimeSinceRefresh(lastRefreshTime)} • Based on ${safeCount} analysed posts`;
-}
-
-/**
- * Map persisted analysis data from Supabase to post object
- * Converts score from 0-1 to 0-100 range
- */
-function postFromArchive(row) {
-  const analysis = row.completed_post_analyses || {};
-  
-  // Convert numeric score (0-1) to 0-100 for dashboard
-  const scorePercent = analysis.score !== null && analysis.score !== undefined 
-    ? Math.round(analysis.score * 100) 
-    : 0;
-  
-  // Map sentiment enum to label for consistency
-  const sentimentLabel = {
-    'positive': 'Very positive',
-    'negative': 'Very negative',
-    'neutral': 'Mixed',
-    'mixed': 'Mixed',
-  }[analysis.sentiment] || 'Unknown';
-  
-  return {
-    uri: row.uri,
-    text: row.post_text,
-    author: row.author_handle,
-    originalLanguage: row.original_language,
-    timestamp: formatTimestamp(row.published_at),
-    publishedAt: row.published_at,
-    url: row.source_url,
-    // Persisted LLM analysis fields
-    score: scorePercent,
-    sentiment: sentimentLabel,
-    emotions: analysis.emotions || [],
-    topics: analysis.topics || [],
-    ai_stance: analysis.ai_tooling_stance || 'unknown',
-    confidence: analysis.confidence || 0,
-    rationale: analysis.rationale || '',
-    model_version: analysis.model || 'unknown',
-    prompt_version: analysis.prompt_version || 'unknown',
-  };
 }
 
 function parseArray(value) {
@@ -257,14 +214,19 @@ function buildReviewSearchFilter(term) {
   return `or=(post_text.ilike.${likeValue},author_handle.ilike.${likeValue},topics.cs.["${escaped}"],topics.cs.[{"name":"${escaped}"}])`;
 }
 
-async function requestArchive(path, options = {}) {
-  const response = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+async function requestArchive(path, options = {}, retryTransientServerError = false) {
+  const request = () => fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: {
       apikey: SUPABASE_PUBLISHABLE_KEY,
       ...options.headers,
     },
   });
+  let response = await request();
+  if (retryTransientServerError && response.status >= 500 && response.status < 600) {
+    await new Promise((resolve) => window.setTimeout(resolve, TRANSIENT_REQUEST_RETRY_DELAY_MS));
+    response = await request();
+  }
   if (!response.ok) throw new Error(`Archive returned ${response.status}`);
   if (response.status === 201 || response.status === 204 || response.headers.get('content-length') === '0') {
     return { data: null, totalCount: 0 };
@@ -344,7 +306,8 @@ async function loadArchive(page = reviewPage, searchTerm = reviewSearchTerm) {
           Prefer: 'count=exact',
           Range: `${from}-${to}`,
         },
-      }
+      },
+      Boolean(searchFilter)
     );
 
     // Discard this response if a newer request has since been issued (e.g. the
@@ -446,7 +409,8 @@ async function loadArchiveV2(page = reviewPage, searchTerm = reviewSearchTerm) {
           Prefer: 'count=exact',
           Range: `${from}-${to}`,
         },
-      }
+      },
+      Boolean(searchFilter)
     );
 
     // Discard this response if a newer request has since been issued (e.g. the
@@ -1078,8 +1042,8 @@ document.getElementById('reviewSource')?.addEventListener('change', (event) => {
 });
 
 // Server-side search: queries the full archive (not just the loaded page)
-// via loadReviewData, debounced with a short timer so typing stays
-// responsive. Changing the search term always resets to page 1.
+// via loadReviewData, debounced long enough to avoid an expensive full-archive
+// request for every keystroke. Changing the search term always resets to page 1.
 let reviewSearchDebounce = null;
 document.getElementById('reviewSearch')?.addEventListener('input', (event) => {
   const value = event.target.value;
@@ -1089,7 +1053,7 @@ document.getElementById('reviewSearch')?.addEventListener('input', (event) => {
   reviewSearchDebounce = window.setTimeout(() => {
     reviewSearchTerm = value;
     loadReviewData(1, reviewSearchTerm);
-  }, 120);
+  }, REVIEW_SEARCH_DEBOUNCE_MS);
 });
 
 // Initial load
