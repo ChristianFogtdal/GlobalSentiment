@@ -102,6 +102,29 @@ function updateFreshnessLabel(lastRefreshTime, sampleCount) {
   label.textContent = `${formatTimeSinceRefresh(lastRefreshTime)} • Based on ${safeCount} analysed posts`;
 }
 
+// Different internal topic keys can humanize to the same display label (e.g.
+// "reliability" and "reliability_issues" both read as "Reliability"). Merge
+// those into a single entry so the topic cloud doesn't show duplicates.
+function mergeTopics(topics) {
+  const byName = new Map();
+  for (const topic of topics) {
+    const key = topic.name.toLowerCase();
+    const existing = byName.get(key);
+    if (!existing) {
+      byName.set(key, { ...topic });
+      continue;
+    }
+    const totalVolume = existing.volume + topic.volume;
+    existing.sentiment = totalVolume > 0
+      ? (existing.sentiment * existing.volume + topic.sentiment * topic.volume) / totalVolume
+      : existing.sentiment;
+    existing.volume = totalVolume;
+    existing.impact = (existing.impact || 0) + (topic.impact || 0);
+    existing.lowSample = existing.lowSample && topic.lowSample;
+  }
+  return Array.from(byName.values()).sort((first, second) => second.volume - first.volume);
+}
+
 function parseArray(value) {
   if (Array.isArray(value)) return value;
   if (typeof value !== 'string') return [];
@@ -132,15 +155,17 @@ function archiveDashboardData() {
   if (!aggregate) {
     return { score: 0, items: 0, confidence: 'N/A', emotions: [], topics: [], stance: 'N/A', stanceCount: 0 };
   }
-  const topics = (aggregate.topics || []).map((topic) => ({
-    id: topic.name,
-    name: humanizeLabel(topic.name),
-    volume: topic.volume,
-    sentiment: topic.avg_score,
-    emotion: '',
-    impact: topic.impact,
-    lowSample: topic.low_sample,
-  }));
+  const topics = mergeTopics((aggregate.topics || [])
+    .filter((topic) => humanizeLabel(topic.name).toLowerCase() !== 'other')
+    .map((topic) => ({
+      id: topic.name,
+      name: humanizeLabel(topic.name),
+      volume: topic.volume,
+      sentiment: topic.avg_score,
+      emotion: '',
+      impact: topic.impact,
+      lowSample: topic.low_sample,
+    })));
   const emotions = (aggregate.emotions || []).map((emotion) => [emotion.name, emotion.count]);
   const stance = aggregate.totals?.stance;
   const stanceCount = aggregate.totals?.stance_count || 0;
