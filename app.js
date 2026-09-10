@@ -265,7 +265,7 @@ async function requestArchive(path, options = {}, retryTransientServerError = fa
 }
 
 const REVIEW_V2_SELECT = 'post_uri,sentiment,sentiment_score,emotions,topics,tools_mentioned,'
-  + 'ai_tooling_stance,confidence,rationale,provider,deployment,model,prompt_version,'
+  + 'ai_tooling_stance,confidence,rationale,content_type,content_type_reason,provider,deployment,model,prompt_version,'
   + 'processed_at,post_text,author_handle,original_language,published_at,source_url';
 
 const reviewSources = {
@@ -318,6 +318,8 @@ const reviewSources = {
       toolsMentioned: parseArray(analysis.tools_mentioned),
       aiStance: analysis.ai_tooling_stance,
       rationale: analysis.rationale || '',
+      contentType: analysis.content_type || null,
+      contentTypeReason: analysis.content_type_reason || '',
       provider: analysis.provider || 'unknown',
       deployment: analysis.deployment || 'unknown',
       model: analysis.model || 'unknown',
@@ -766,6 +768,8 @@ function toFeedRecord(post, source) {
         model: post.model,
         promptVersion: post.promptVersion,
         rationale: post.rationale,
+        contentType: post.contentType ? humanizeLabel(post.contentType) : 'Not yet classified',
+        contentTypeReason: post.contentTypeReason,
       },
     };
   }
@@ -866,6 +870,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
         Deployment: record.provenance.deployment,
         Model: record.provenance.model,
         'Prompt version': record.provenance.promptVersion,
+        'Content type': record.provenance.contentType,
       } : {}),
     }).map(([label, value]) => `<div><b>${escapeHtml(label)}</b><span>${escapeHtml(String(value))}</span></div>`).join('');
 
@@ -893,6 +898,7 @@ function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessa
       <div class="review-details-card">
         ${provenanceRows}
         <div class="review-details-rationale"><b>Rationale</b><span>${escapeHtml(record.provenance.rationale)}</span></div>
+        ${record.source === 'v2' && record.provenance.contentTypeReason ? `<div class="review-details-rationale"><b>Content type reason</b><span>${escapeHtml(record.provenance.contentTypeReason)}</span></div>` : ''}
       </div>` : ''}
     </article>`;
   }).join('');
