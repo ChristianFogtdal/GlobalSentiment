@@ -22,6 +22,7 @@ const corsHeaders = { 'Content-Type': 'application/json' };
 
 export const ALLOWED_SENTIMENTS = ['positive', 'negative', 'neutral', 'mixed'] as const;
 export const ALLOWED_STANCES = ['positive', 'negative', 'neutral', 'mixed', 'not_applicable'] as const;
+export const ALLOWED_CONTENT_TYPES = ['organic', 'promotional', 'spam'] as const;
 export const ALLOWED_EMOTIONS = [
   'excitement', 'optimism', 'trust', 'curiosity', 'admiration', 'relief',
   'neutral', 'surprise', 'confusion', 'concern', 'skepticism', 'uncertainty',
@@ -40,6 +41,7 @@ export const ALLOWED_TOPICS = [
 ] as const;
 
 const MAX_RATIONALE_LENGTH = 600;
+const MAX_CONTENT_TYPE_REASON_LENGTH = 200;
 const MIN_TOPICS = 1;
 const MAX_TOPICS = 3;
 const MAX_EMOTIONS = ALLOWED_EMOTIONS.length;
@@ -49,6 +51,7 @@ const MAX_TOOL_NAME_LENGTH = 80;
 type Sentiment = typeof ALLOWED_SENTIMENTS[number];
 type Stance = typeof ALLOWED_STANCES[number];
 type Topic = typeof ALLOWED_TOPICS[number];
+type ContentType = typeof ALLOWED_CONTENT_TYPES[number];
 
 interface EmotionEntry { name: string; intensity: number }
 interface TopicEntry { name: string; relevance: number }
@@ -62,6 +65,8 @@ interface ValidatedAnalysis {
   ai_tooling_stance: Stance;
   confidence: number;
   rationale: string;
+  content_type: ContentType;
+  content_type_reason: string;
 }
 
 function isFiniteNumberInRange(value: unknown, min: number, max: number): value is number {
@@ -145,6 +150,15 @@ export function validateAnalysisResponse(payload: unknown): { ok: true; value: V
     return { ok: false, error: 'Invalid or missing rationale' };
   }
 
+  if (typeof candidate.content_type !== 'string' || !ALLOWED_CONTENT_TYPES.includes(candidate.content_type as ContentType)) {
+    return { ok: false, error: 'Invalid or missing content_type' };
+  }
+  if (typeof candidate.content_type_reason !== 'string' || candidate.content_type_reason.trim().length === 0) {
+    return { ok: false, error: 'Invalid or missing content_type_reason' };
+  }
+  // An overlong reason is a low-severity provider quirk, not a reason to discard an otherwise-valid analysis.
+  const contentTypeReason = candidate.content_type_reason.trim().slice(0, MAX_CONTENT_TYPE_REASON_LENGTH);
+
   return {
     ok: true,
     value: {
@@ -156,6 +170,8 @@ export function validateAnalysisResponse(payload: unknown): { ok: true; value: V
       ai_tooling_stance: candidate.ai_tooling_stance as Stance,
       confidence: candidate.confidence as number,
       rationale: (candidate.rationale as string).trim(),
+      content_type: candidate.content_type as ContentType,
+      content_type_reason: contentTypeReason,
     },
   };
 }
@@ -205,8 +221,13 @@ const RESPONSE_JSON_SCHEMA = {
       ai_tooling_stance: { type: 'string', enum: ALLOWED_STANCES },
       confidence: { type: 'number', minimum: 0, maximum: 1 },
       rationale: { type: 'string' },
+      content_type: { type: 'string', enum: ALLOWED_CONTENT_TYPES },
+      content_type_reason: { type: 'string', maxLength: MAX_CONTENT_TYPE_REASON_LENGTH },
     },
-    required: ['sentiment', 'sentiment_score', 'emotions', 'topics', 'tools_mentioned', 'ai_tooling_stance', 'confidence', 'rationale'],
+    required: [
+      'sentiment', 'sentiment_score', 'emotions', 'topics', 'tools_mentioned', 'ai_tooling_stance', 'confidence', 'rationale',
+      'content_type', 'content_type_reason',
+    ],
   },
 };
 
@@ -240,6 +261,18 @@ export function buildPrompt(postText: string, originalLanguage: string | null) {
     '- tools_mentioned is the exclusive place for concrete AI product/tool names (e.g. "ChatGPT", "Copilot", "Claude", "Gemini").',
     '- ai_tooling_stance records an explicit evaluative stance toward a named AI product/tool only. It is independently grounded in the text and never inferred from AI Sentiment.',
     '- Use ai_tooling_stance "not_applicable" when no named product/tool is evaluated, including factual product mentions and posts about AI generally.',
+    '',
+    'content_type classifies the primary intent of the post, independent of AI Sentiment, emotion, or topic. Choose exactly one:',
+    '- organic: independent opinions, discussions, reactions, commentary, analysis, community conversation, or news discussion about AI.',
+    '- promotional: first-party marketing, product or launch promotion, webinars, newsletters, conferences/events, recruiting or hiring, or company promotion.',
+    '- spam: obvious engagement farming, affiliate-link content, scams, keyword stuffing, or other low-value content.',
+    'Follow these rules precisely when producing content_type:',
+    '- Classify by the primary intent of the post, not by the mere presence of a company, product, or model name. ' +
+      'A post that discusses or evaluates an AI product or company (for example, a post saying a named assistant tool has an impressive new update) is organic, ' +
+      'not promotional, unless its actual purpose is to market, advertise, or announce with a call to action on behalf of that product or company.',
+    '- Do not infer that content is automated, bot-generated, or repetitive unless the post text itself gives sufficient evidence of that.',
+    '- If intent is genuinely ambiguous between organic and promotional or spam, default to organic.',
+    'content_type_reason is a short, one-sentence, grounded explanation for the chosen content_type.',
   ].join('\n');
 }
 
@@ -390,6 +423,8 @@ export async function processClaimedPost(
       ai_tooling_stance: value.ai_tooling_stance,
       confidence: value.confidence,
       rationale: value.rationale,
+      content_type: value.content_type,
+      content_type_reason: value.content_type_reason,
       status: 'complete',
       processed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),

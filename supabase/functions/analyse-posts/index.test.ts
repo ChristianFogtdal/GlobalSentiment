@@ -1,5 +1,6 @@
 import { assert, assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
 import {
+  ALLOWED_CONTENT_TYPES,
   ALLOWED_EMOTIONS,
   ALLOWED_TOPICS,
   buildPrompt,
@@ -17,6 +18,8 @@ function validAnalysis(overrides: Record<string, unknown> = {}) {
     ai_tooling_stance: 'positive',
     confidence: 0.9,
     rationale: 'The post expresses enthusiasm about AI coding tools improving productivity.',
+    content_type: 'organic',
+    content_type_reason: 'Independent commentary praising a coding tool.',
     ...overrides,
   };
 }
@@ -102,6 +105,33 @@ Deno.test('rejects an empty rationale', () => {
 Deno.test('rejects an invalid ai_tooling_stance', () => {
   const result = validateAnalysisResponse(validAnalysis({ ai_tooling_stance: 'excited' }));
   assert(!result.ok);
+});
+
+Deno.test('accepts every allowed content_type', () => {
+  for (const contentType of ALLOWED_CONTENT_TYPES) {
+    assert(validateAnalysisResponse(validAnalysis({ content_type: contentType })).ok);
+  }
+});
+
+Deno.test('rejects an invalid content_type enum value', () => {
+  const result = validateAnalysisResponse(validAnalysis({ content_type: 'sponsored' }));
+  assert(!result.ok);
+});
+
+Deno.test('rejects a missing or empty content_type_reason', () => {
+  assert(!validateAnalysisResponse(validAnalysis({ content_type_reason: '' })).ok);
+  assert(!validateAnalysisResponse(validAnalysis({ content_type_reason: '   ' })).ok);
+  const withoutReason = validAnalysis();
+  delete (withoutReason as Record<string, unknown>).content_type_reason;
+  assert(!validateAnalysisResponse(withoutReason).ok);
+});
+
+Deno.test('truncates an overlong content_type_reason instead of failing the analysis', () => {
+  const result = validateAnalysisResponse(validAnalysis({ content_type_reason: 'x'.repeat(1000) }));
+  assert(result.ok);
+  if (result.ok) {
+    assertEquals(result.value.content_type_reason.length, 200);
+  }
 });
 
 Deno.test('rejects confidence outside [0, 1]', () => {
