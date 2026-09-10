@@ -9,12 +9,12 @@ const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const REVIEW_SEARCH_DEBOUNCE_MS = 400;
 const TRANSIENT_REQUEST_RETRY_DELAY_MS = 300;
-const bluesky = { posts: [], isLoading: false, error: '', totalCount: 0 };
 const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
+const filteredV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 // Dedicated dataset for the main Dashboard/map view, sourced from the
 // server-aggregated public.get_dashboard_v2() RPC (all completed Foundry
-// prompt versions). Fully independent from `bluesky`/`blueskyV2`, which
-// continue to back the Data review tab's Legacy/V2 toggle.
+// prompt versions). Fully independent from `blueskyV2`/`filteredV2`, which
+// continue to back the Data review tab's Organic/Filtered-away toggle.
 //   - aggregate: the full-history totals/topics/emotions/trend payload.
 //   - recent: the bounded recent-post feed (labelled as such in the UI);
 //     never treated as, or merged into, a pretend full archive.
@@ -24,11 +24,11 @@ const REVIEW_PAGE_SIZE = 100;
 // responses (e.g. an older keystroke's request resolving after a newer one),
 // which would otherwise overwrite the feed with results for a different search term.
 const review = {
-  source: 'v2', // 'legacy' | 'v2' -- Latest model (Foundry) is the default on open
+  source: 'v2', // 'v2' (Organic) | 'filtered' -- Organic is the default on open
   page: 1,
   searchTerm: '',
   expandedUri: null,
-  requestSeq: { legacy: 0, v2: 0 },
+  requestSeq: { v2: 0, filtered: 0 },
 };
 let activeView = 'dashboard';
 
@@ -226,19 +226,33 @@ function trendSeriesFromBuckets(buckets) {
 }
 
 /**
- * Build a PostgREST `or=(...)` filter that matches a search term against
- * post_text, author_handle, and topics (JSONB array of strings or objects),
- * so search runs across the full archive at the database level instead of
- * only the currently loaded page.
+ * Build the bare, comma-separated inner OR-conditions for matching a search
+ * term against post_text, author_handle, and topics (JSONB array of strings
+ * or objects), so search runs across the full archive at the database level
+ * instead of only the currently loaded page. Returns '' if there is no term.
+ * Callers combine this with a content-type filter via buildReviewQueryFilter.
  */
-function buildReviewSearchFilter(term) {
+function buildReviewSearchExpr(term) {
   const trimmed = term.trim();
   if (!trimmed) return '';
   // Escape characters that are meaningful to PostgREST's filter syntax
-  // (comma, parentheses) since they would otherwise break the or=(...) list.
+  // (quote, backslash, comma, parentheses) since they would otherwise break
+  // the enclosing or(...)/and=(...) grouping.
   const escaped = trimmed.replace(/["\\,()]/g, '\\$&');
   const likeValue = `*${escaped}*`;
-  return `or=(post_text.ilike.${likeValue},author_handle.ilike.${likeValue},topics.cs.["${escaped}"],topics.cs.[{"name":"${escaped}"}])`;
+  return `post_text.ilike.${likeValue},author_handle.ilike.${likeValue},topics.cs.["${escaped}"],topics.cs.[{"name":"${escaped}"}]`;
+}
+
+/**
+ * Combine a source's content-type filter with an optional search expression
+ * into the query fragment loadReviewArchive appends to the request. With no
+ * search term, the content-type filter is used as-is (it is always a valid
+ * standalone top-level query param). With a search term, both conditions are
+ * nested inside a single and=(...) so both must match.
+ */
+function buildReviewQueryFilter(contentTypeParam, contentTypeExpr, searchExpr) {
+  if (!searchExpr) return contentTypeParam;
+  return `and=(${contentTypeExpr},or(${searchExpr}))`;
 }
 
 async function requestArchive(path, options = {}, retryTransientServerError = false) {
@@ -268,71 +282,57 @@ const REVIEW_V2_SELECT = 'post_uri,sentiment,sentiment_score,emotions,topics,too
   + 'ai_tooling_stance,confidence,rationale,content_type,content_type_reason,provider,deployment,model,prompt_version,'
   + 'processed_at,post_text,author_handle,original_language,published_at,source_url';
 
+const mapV2Row = (analysis) => ({
+  uri: analysis.post_uri,
+  displayScore: v2DisplayScore(analysis.sentiment_score),
+  sentimentScore: analysis.sentiment_score,
+  sentiment: analysis.sentiment || 'unknown',
+  confidence: analysis.confidence || 0,
+  emotions: parseArray(analysis.emotions),
+  topics: parseArray(analysis.topics),
+  toolsMentioned: parseArray(analysis.tools_mentioned),
+  aiStance: analysis.ai_tooling_stance,
+  rationale: analysis.rationale || '',
+  contentType: analysis.content_type || null,
+  contentTypeReason: analysis.content_type_reason || '',
+  provider: analysis.provider || 'unknown',
+  deployment: analysis.deployment || 'unknown',
+  model: analysis.model || 'unknown',
+  promptVersion: analysis.prompt_version || 'unknown',
+  processedAt: analysis.processed_at,
+  publishedAt: analysis.published_at,
+  timestamp: formatTimestamp(analysis.published_at),
+  processedTimestamp: analysis.processed_at ? formatTimestamp(analysis.processed_at) : 'N/A',
+  url: analysis.source_url,
+  text: analysis.post_text || '(post text unavailable)',
+  author: analysis.author_handle || 'unknown',
+  originalLanguage: analysis.original_language || 'unknown',
+});
+
 const reviewSources = {
-  legacy: {
-    state: bluesky,
-    view: 'completed_post_analyses',
-    emptyMessage: 'No completed analyses yet. Check back soon.',
-    errorLabel: 'archive',
-    afterLoad: () => {
-      renderBlueskyStatus();
-      renderDashboard(selectedData());
-    },
-    mapRow: (analysis) => ({
-      uri: analysis.post_uri,
-      score: Math.round((analysis.score || 0) * 100),
-      sentiment: {
-        positive: 'Very positive',
-        negative: 'Very negative',
-        neutral: 'Mixed',
-        mixed: 'Mixed',
-      }[analysis.sentiment] || 'Unknown',
-      confidence: analysis.confidence || 0,
-      emotions: parseArray(analysis.emotions),
-      topics: parseArray(analysis.topics),
-      ai_stance: analysis.ai_tooling_stance || 'not_applicable',
-      rationale: analysis.rationale || '',
-      model: analysis.model || 'unknown',
-      timestamp: formatTimestamp(analysis.published_at || analysis.created_at),
-      publishedAt: analysis.published_at || analysis.created_at,
-      url: analysis.source_url,
-      text: analysis.post_text || '(post text unavailable)',
-      author: analysis.author_handle || 'unknown',
-      originalLanguage: analysis.original_language || 'unknown',
-    }),
-  },
   v2: {
     state: blueskyV2,
     view: 'completed_post_analyses_v2',
     select: REVIEW_V2_SELECT,
+    format: 'v2',
+    // NULL content_type = pre-content_type historical rows, treated as
+    // organic -- same convention as the dashboard RPC's coalesce(content_type,'organic').
+    contentTypeParam: 'or=(content_type.eq.organic,content_type.is.null)',
+    contentTypeExpr: 'or(content_type.eq.organic,content_type.is.null)',
     emptyMessage: 'No completed V2 analyses yet. Check back soon.',
     errorLabel: 'V2 archive',
-    mapRow: (analysis) => ({
-      uri: analysis.post_uri,
-      displayScore: v2DisplayScore(analysis.sentiment_score),
-      sentimentScore: analysis.sentiment_score,
-      sentiment: analysis.sentiment || 'unknown',
-      confidence: analysis.confidence || 0,
-      emotions: parseArray(analysis.emotions),
-      topics: parseArray(analysis.topics),
-      toolsMentioned: parseArray(analysis.tools_mentioned),
-      aiStance: analysis.ai_tooling_stance,
-      rationale: analysis.rationale || '',
-      contentType: analysis.content_type || null,
-      contentTypeReason: analysis.content_type_reason || '',
-      provider: analysis.provider || 'unknown',
-      deployment: analysis.deployment || 'unknown',
-      model: analysis.model || 'unknown',
-      promptVersion: analysis.prompt_version || 'unknown',
-      processedAt: analysis.processed_at,
-      publishedAt: analysis.published_at,
-      timestamp: formatTimestamp(analysis.published_at),
-      processedTimestamp: analysis.processed_at ? formatTimestamp(analysis.processed_at) : 'N/A',
-      url: analysis.source_url,
-      text: analysis.post_text || '(post text unavailable)',
-      author: analysis.author_handle || 'unknown',
-      originalLanguage: analysis.original_language || 'unknown',
-    }),
+    mapRow: mapV2Row,
+  },
+  filtered: {
+    state: filteredV2,
+    view: 'completed_post_analyses_v2',
+    select: REVIEW_V2_SELECT,
+    format: 'v2',
+    contentTypeParam: 'content_type=in.(promotional,spam)',
+    contentTypeExpr: 'content_type.in.(promotional,spam)',
+    emptyMessage: 'No promotional/spam posts filtered yet.',
+    errorLabel: 'filtered archive',
+    mapRow: mapV2Row,
   },
 };
 
@@ -342,23 +342,23 @@ async function loadReviewArchive(source, page = review.page, searchTerm = review
   const { state } = descriptor;
   try {
     state.isLoading = true;
-    if (descriptor.afterLoad) descriptor.afterLoad();
     renderDataReview();
     review.page = page;
 
     const from = (page - 1) * REVIEW_PAGE_SIZE;
     const to = from + REVIEW_PAGE_SIZE - 1;
-    const searchFilter = buildReviewSearchFilter(searchTerm);
+    const searchExpr = buildReviewSearchExpr(searchTerm);
+    const queryFilter = buildReviewQueryFilter(descriptor.contentTypeParam, descriptor.contentTypeExpr, searchExpr);
     const queryParameters = [
       descriptor.select ? `select=${descriptor.select}` : '',
       'order=published_at.desc',
-      searchFilter,
+      queryFilter,
     ].filter(Boolean).join('&');
     const query = `${descriptor.view}?${queryParameters}`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
       { headers: { Prefer: 'count=exact', Range: `${from}-${to}` } },
-      Boolean(searchFilter)
+      Boolean(searchExpr)
     );
 
     if (requestId !== review.requestSeq[source]) return;
@@ -379,27 +379,14 @@ async function loadReviewArchive(source, page = review.page, searchTerm = review
   } finally {
     if (requestId === review.requestSeq[source]) {
       state.isLoading = false;
-      if (descriptor.afterLoad) descriptor.afterLoad();
       renderDataReview();
     }
   }
 }
 
-function loadArchive(page = review.page, searchTerm = review.searchTerm) {
-  return loadReviewArchive('legacy', page, searchTerm);
-}
-
-function loadArchiveV2(page = review.page, searchTerm = review.searchTerm) {
-  return loadReviewArchive('v2', page, searchTerm);
-}
-
 /** Dispatch archive loading to the currently selected review source. */
-async function loadReviewData(page = review.page, searchTerm = review.searchTerm) {
-  if (review.source === 'v2') {
-    await loadArchiveV2(page, searchTerm);
-  } else {
-    await loadArchive(page, searchTerm);
-  }
+function loadReviewData(page = review.page, searchTerm = review.searchTerm) {
+  return loadReviewArchive(review.source, page, searchTerm);
 }
 
 /**
@@ -407,7 +394,7 @@ async function loadReviewData(page = review.page, searchTerm = review.searchTerm
  * for the main Dashboard/map view: one bounded server response instead of
  * paginating through the full completed_post_analyses_v2 archive. Full-history
  * metrics and trends remain historically accurate because aggregation happens
- * in SQL, not in the browser. The Data review tab's Legacy/V2 toggle remains
+ * in SQL, not in the browser. The Data review tab's Organic/Filtered-away toggle remains
  * independent and continues to page through the archive directly.
  */
 async function loadDashboardV2() {
@@ -738,72 +725,51 @@ function populateTrendTopics(topics) {
   }
 }
 
-/** Normalize a legacy or V2 archive post into a source-neutral feed record.
+/** Normalize a V2 archive post (Organic or Filtered-away) into a feed record.
  * Primary fields drive the collapsed feed item; provenance fields are only
  * ever shown inside the inline "Analysis details" expansion. */
-function toFeedRecord(post, source) {
-  if (source === 'v2') {
-    const topicNames = post.topics.map((item) => typeof item === 'string' ? item : item.name).filter(Boolean).map(humanizeLabel);
-    const emotionNames = post.emotions.map((e) => typeof e === 'string' ? humanizeLabel(e) : `${humanizeLabel(e.name)} (${Math.round((e.intensity || 0) * 100)}%)`);
-    return {
-      uri: post.uri,
-      source: 'v2',
-      author: post.author,
-      language: post.originalLanguage || 'unknown',
-      timestamp: post.timestamp,
-      text: post.text,
-      score: post.displayScore,
-      sentimentLabel: `AI Sentiment: ${humanizeLabel(post.sentiment)}`,
-      topics: topicNames,
-      confidence: post.confidence,
-      toolsMentioned: post.toolsMentioned,
-      url: post.url,
-      provenance: {
-        rawScore: post.sentimentScore ?? 'N/A',
-        emotions: emotionNames.length ? emotionNames.join(', ') : 'N/A',
-        aiStance: aiStanceLabel(post.aiStance),
-        provider: post.provider,
-        processedTimestamp: post.processedTimestamp,
-        deployment: post.deployment,
-        model: post.model,
-        promptVersion: post.promptVersion,
-        rationale: post.rationale,
-        contentType: post.contentType ? humanizeLabel(post.contentType) : 'Not yet classified',
-        contentTypeReason: post.contentTypeReason,
-      },
-    };
-  }
+function toFeedRecord(post, format) {
+  const topicNames = post.topics.map((item) => typeof item === 'string' ? item : item.name).filter(Boolean).map(humanizeLabel);
+  const emotionNames = post.emotions.map((e) => typeof e === 'string' ? humanizeLabel(e) : `${humanizeLabel(e.name)} (${Math.round((e.intensity || 0) * 100)}%)`);
   return {
     uri: post.uri,
-    source: 'legacy',
+    source: format,
     author: post.author,
     language: post.originalLanguage || 'unknown',
     timestamp: post.timestamp,
     text: post.text,
-    score: post.score,
-    sentimentLabel: post.sentiment,
-    topics: post.topics.map(humanizeLabel),
+    score: post.displayScore,
+    sentimentLabel: `AI Sentiment: ${humanizeLabel(post.sentiment)}`,
+    topics: topicNames,
     confidence: post.confidence,
-    toolsMentioned: [],
+    toolsMentioned: post.toolsMentioned,
     url: post.url,
     provenance: {
-      emotions: post.emotions.length ? post.emotions.map((e) => `${humanizeLabel(e.label)} (${(e.confidence * 100).toFixed(0)}%)`).join(', ') : 'N/A',
-      aiStance: aiStanceLabel(post.ai_stance),
+      rawScore: post.sentimentScore ?? 'N/A',
+      emotions: emotionNames.length ? emotionNames.join(', ') : 'N/A',
+      aiStance: aiStanceLabel(post.aiStance),
+      provider: post.provider,
+      processedTimestamp: post.processedTimestamp,
+      deployment: post.deployment,
+      model: post.model,
+      promptVersion: post.promptVersion,
       rationale: post.rationale,
+      contentType: post.contentType ? humanizeLabel(post.contentType) : 'Not yet classified',
+      contentTypeReason: post.contentTypeReason,
     },
   };
 }
 
 function renderDataReview() {
   if (review.source === 'v2') {
-    renderFeed(blueskyV2, 'v2', 'V2 analyzed posts', 'No completed V2 analyses available yet.', 'Loading persisted V2 sentiment analysis from Supabase...');
+    renderFeed(blueskyV2, reviewSources.v2.format, 'Organic analyzed posts', 'No completed V2 analyses available yet.', 'Loading persisted V2 sentiment analysis from Supabase...');
   } else {
-    renderFeed(bluesky, 'legacy', 'archived posts', 'No analyzed posts available yet. The archive will populate when analysis completes.', 'Loading persisted sentiment analysis from Supabase...');
+    renderFeed(filteredV2, reviewSources.filtered.format, 'filtered away posts', 'No promotional/spam posts filtered yet.', 'Loading persisted V2 sentiment analysis from Supabase...');
   }
 }
 
 /** Shared conversation-first feed renderer for both archive sources. Search
- * is applied server-side (via loadReviewData/loadArchive/loadArchiveV2), so
+ * is applied server-side (via loadReviewData/loadReviewArchive), so
  * the posts here are already the matching set for the full archive. */
 function renderFeed(archiveState, source, countLabel, emptyMessage, loadingMessage) {
   const list = $('dataReviewList');
@@ -922,8 +888,9 @@ function setActiveView(view) {
     tab.setAttribute('aria-selected', String(isActive));
   });
   if (view === 'data-review') {
-    if (review.source === 'v2' && !blueskyV2.posts.length && !blueskyV2.isLoading && !blueskyV2.error) {
-      loadArchiveV2(1);
+    const { state } = reviewSources[review.source];
+    if (!state.posts.length && !state.isLoading && !state.error) {
+      loadReviewData(1);
     } else {
       renderDataReview();
     }
@@ -997,18 +964,17 @@ async function init() {
   renderDashboard(selectedData());
   
   // Load persisted V2 (Foundry) sentiment analyses for the main dashboard,
-  // and the V2 archive for the Data review tab's default Latest model source.
-  await Promise.all([loadDashboardV2(), loadArchiveV2()]);
+  // and the Organic archive for the Data review tab's default source.
+  await Promise.all([loadDashboardV2(), loadReviewData()]);
   renderDashboard(selectedData());
   renderFreshness();
   
   // Refresh archives periodically. The dashboard aggregation now uses the V2
   // (Foundry) source; the Data review tab additionally refreshes whichever
-  // source is currently toggled on.
+  // source is currently toggled on, preserving its current page and search term.
   setInterval(() => {
     loadDashboardV2();
-    if (review.source === 'legacy') loadArchive(review.page);
-    if (review.source === 'v2') loadArchiveV2(review.page);
+    loadReviewData();
   }, ARCHIVE_REFRESH_MS);
 
   // Keep the "Updated Xm ago" freshness label current between archive reloads.
