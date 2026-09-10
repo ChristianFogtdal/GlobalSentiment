@@ -1035,6 +1035,11 @@ const FEATURED_CONVERSATIONS = [
   { quote: "You suggesting ChatGPT isn't 100% accurate \u{1F923}", author: '@algarveceltic.bsky.social', analysis: ['28% Negative', 'Reliability'] },
   { quote: 'Gemini probably led him to making moldy Lunchables knockoffs, so go nuts, Sir Beast.', author: '@shawnst.bsky.social', analysis: ['20% Negative', 'Quality & reliability, Creativity & misuse'] },
   { quote: 'Claude in Chrome feels like a real product, not just a demo.', author: '@papoo7.bsky.social', analysis: ['80% Positive', 'Product maturity, User experience'] },
+  { quote: 'Human intelligence comes from learning. Artificial, "super," intelligence comes from stealing. Sounds about right.', author: '@paulallopenna.bsky.social', analysis: ['13% Negative', 'Ethics, Trust'] },
+  { quote: 'Yet another AI researcher has come forward to warn us of possible human extinction from uncontrolled AI super intelligence, and their numbers keep growing. The danger is in AI recursive self improvement, not today’s models. therundownai.beehiiv.com/p/an-anthrop...', author: '@puffjnlee.bsky.social', analysis: ['13% Negative', 'Safety, Risk, Research'] },
+  { quote: 'They have had scam ads running for years and not just meta, but Google as well. They should have been in prison for those scams already, but with this AI scam, they really need to go to prison.', author: '@wesmank.bsky.social', analysis: ['10% Negative', 'Trust, Safety, Ethics'] },
+  { quote: 'Blame the creator of grok. (such a stupid name, grok😀)', author: '@doybo.bsky.social', analysis: ['20% Negative', 'Public Opinion, grok'] },
+  { quote: 'No, this is me arguing that people pursuing original work and research cannot trust AI products under any circumstances.', author: '@qlippot.bsky.social', analysis: ['10% Negative', 'Trust, Research'] },
 ];
 const FEATURED_ROTATION_MS = 10 * 1000;
 const FEATURED_FADE_MS = 500;
