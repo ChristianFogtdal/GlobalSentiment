@@ -542,6 +542,18 @@ export async function resolveActivePromptVersion(
   return { promptVersion: dbPromptVersion };
 }
 
+// Dashboard cache refresh is intentionally NOT triggered from this function.
+// It was originally fired here via EdgeRuntime.waitUntil() as an event-driven
+// trigger (Phase 4 of the dashboard_v2_cache plan), but batches routinely take
+// close to or over this function's ~150s idle-timeout budget, so the isolate
+// is torn down before the background refresh (~60-85s on its own) can
+// complete - confirmed in production: zero event-driven refreshes ever
+// completed (dashboard_v2_cache_refresh_log only ever showed cron-aligned
+// runs). The `dashboard-v2-cache-refresh-safety-net` pg_cron job (every 5
+// minutes) is the sole refresh trigger and has proven 100% reliable, keeping
+// the cache no more than ~5 minutes stale. See
+// 20260914094500_dashboard_v2_cache_cron.sql.
+
 async function handleRequest(request: Request): Promise<Response> {
   if (request.method !== 'POST' || request.headers.get('x-ingestion-secret') !== Deno.env.get('INGESTION_SECRET')) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });

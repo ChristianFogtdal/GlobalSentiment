@@ -1,0 +1,26 @@
+-- Fixes an ineffective statement_timeout on the dashboard v2 cache refresh path.
+--
+-- compute_dashboard_v2_aggregate() and compute_top_topic_trends() both carry
+-- `set statement_timeout = '20s'`, copied from the original get_dashboard_v2()
+-- body. That override only takes effect when a function is invoked as a
+-- top-level statement: Postgres arms statement_timeout once per top-level
+-- statement, not per nested SPI call. Since refresh_dashboard_v2_cache() calls
+-- both of them internally, the 20s limit has never actually been enforced
+-- there - confirmed in production: the very first seed call succeeded at
+-- 76,392ms, well past 20s.
+--
+-- refresh_dashboard_v2_cache() itself carries no explicit statement_timeout,
+-- so it inherits whatever ambient timeout applies to its caller's session
+-- (pg_cron, in the safety-net case). That ambient limit was hit in production
+-- on 2026-09-14 13:30 UTC: a refresh failed at 120,045ms with "canceling
+-- statement due to statement timeout", most likely because it ran
+-- concurrently with an analyse-posts batch invocation competing for
+-- resources. Normal refreshes have run 61-85s.
+--
+-- Fix: attach an explicit, generous statement_timeout directly to
+-- refresh_dashboard_v2_cache() (the function actually invoked as a top-level
+-- statement by both pg_cron and any manual call), sized well above observed
+-- normal duration and the 120s failure seen under contention, but still
+-- comfortably under the 5-minute cron cadence so a genuinely runaway run
+-- cannot pile up past the next scheduled tick.
+alter function public.refresh_dashboard_v2_cache() set statement_timeout = '240s';

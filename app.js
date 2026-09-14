@@ -398,6 +398,9 @@ function loadReviewData(page = review.page, searchTerm = review.searchTerm) {
  * independent and continues to page through the archive directly.
  */
 async function loadDashboardV2() {
+  if (dashboardV2.isLoading) return;
+  let shouldRenderDashboard = true;
+
   try {
     dashboardV2.isLoading = true;
     renderBlueskyStatus();
@@ -409,14 +412,23 @@ async function loadDashboardV2() {
     });
 
     dashboardV2.totalCount = aggregate?.totals?.count || 0;
+    const previousAggregate = dashboardV2.aggregate;
+    const isUnchangedGeneration = Boolean(
+      aggregate?.generated_at
+      && aggregate.generated_at === previousAggregate?.generated_at
+    );
 
     if (!aggregate || !aggregate.totals?.count) {
       dashboardV2.error = 'No completed V2 analyses yet. Check back soon.';
       dashboardV2.aggregate = null;
       dashboardV2.recent = [];
+    } else if (isUnchangedGeneration) {
+      dashboardV2.error = '';
+      shouldRenderDashboard = false;
     } else {
+      const trendChanged = JSON.stringify(previousAggregate?.trend || []) !== JSON.stringify(aggregate.trend || []);
       dashboardV2.aggregate = aggregate;
-      trendTopicCache = new Map();
+      if (trendChanged) trendTopicCache = new Map();
       // Bounded recent feed only; never merged into a pretend full archive.
       dashboardV2.recent = (aggregate.recent || []).map((analysis) => ({
         uri: analysis.post_uri,
@@ -439,14 +451,16 @@ async function loadDashboardV2() {
       }));
       dashboardV2.error = '';
     }
-    dashboardV2.lastLoadedAt = new Date();
+    dashboardV2.lastLoadedAt = aggregate?.generated_at
+      ? new Date(aggregate.generated_at)
+      : null;
   } catch (error) {
     dashboardV2.error = `Failed to load V2 dashboard aggregate: ${error.message}`;
     console.error('Dashboard V2 aggregate load error:', error);
   } finally {
     dashboardV2.isLoading = false;
     renderBlueskyStatus();
-    renderDashboard(selectedData());
+    if (shouldRenderDashboard) renderDashboard(selectedData());
     renderFreshness();
   }
 }
@@ -537,7 +551,7 @@ function renderTopics(topics) {
 let trendTopic = 'all';
 // Cache of topic-scoped trend payloads (public.get_dashboard_v2_trend()) so
 // re-selecting a topic during the same session doesn't refetch. Invalidated
-// whenever a fresh dashboard aggregate loads (see loadDashboardV2).
+// only when the aggregate's all-topics trend changes (see loadDashboardV2).
 let trendTopicCache = new Map();
 
 async function fetchTrendBuckets(topic) {
@@ -973,9 +987,14 @@ async function init() {
   // (Foundry) source; the Data review tab additionally refreshes whichever
   // source is currently toggled on, preserving its current page and search term.
   setInterval(() => {
-    loadDashboardV2();
-    loadReviewData();
+    if (document.hidden || dashboardV2.isLoading) return;
+    void Promise.all([loadDashboardV2(), loadReviewData()]);
   }, ARCHIVE_REFRESH_MS);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || dashboardV2.isLoading) return;
+    void Promise.all([loadDashboardV2(), loadReviewData()]);
+  });
 
   // Keep the "Updated Xm ago" freshness label current between archive reloads.
   setInterval(renderFreshness, 30 * 1000);
