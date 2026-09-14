@@ -517,6 +517,52 @@ export async function runBatch(
   return { selected, completed, failed, scanned, results };
 }
 
+// Telemetry for the scheduled batch path only (see
+// 20260914210000_analyse_posts_invocation_log.sql). Manual single-post
+// requests are not logged here: batch_size is not a meaningful concept for
+// them, and they are not part of the cadence-vs-throughput experiment this
+// table exists to support.
+//
+// Logging failures are swallowed (never allowed to fail the actual
+// analysis work) since this is observability, not a correctness dependency.
+export async function logInvocationStart(
+  supabase: ReturnType<typeof createClient>,
+  batchSize: number,
+): Promise<number | null> {
+  try {
+    const { data, error } = await supabase
+      .from('analyse_posts_invocation_log')
+      .insert({ batch_size: batchSize })
+      .select('id')
+      .single();
+    if (error || !data) return null;
+    return (data as { id: number }).id;
+  } catch {
+    return null;
+  }
+}
+
+export async function logInvocationFinish(
+  supabase: ReturnType<typeof createClient>,
+  invocationLogId: number | null,
+  outcome: BatchSummary | { error: string },
+): Promise<void> {
+  if (invocationLogId === null) return;
+  try {
+    const update = 'error' in outcome
+      ? { finished_at: new Date().toISOString(), error_message: outcome.error }
+      : {
+        finished_at: new Date().toISOString(),
+        selected: outcome.selected,
+        completed: outcome.completed,
+        failed: outcome.failed,
+      };
+    await supabase.from('analyse_posts_invocation_log').update(update).eq('id', invocationLogId);
+  } catch {
+    // Best-effort only; a logging failure must not surface as an analysis failure.
+  }
+}
+
 // Resolves the single authoritative active V2 prompt version from the
 // database (public.get_active_prompt_version(), see migration
 // 20260904090000_active_prompt_version_contract.sql) rather than treating
@@ -629,7 +675,10 @@ async function handleRequest(request: Request): Promise<Response> {
     return new Response(JSON.stringify({ selected: 1, completed: 0, failed: 1, error: (result as { error: string }).error }), { headers: corsHeaders });
   }
 
-  const batchResult = await runBatch(supabase, config, resolveBatchSize());
+  const batchSize = resolveBatchSize();
+  const invocationLogId = await logInvocationStart(supabase, batchSize);
+  const batchResult = await runBatch(supabase, config, batchSize);
+  await logInvocationFinish(supabase, invocationLogId, batchResult);
   if ('error' in batchResult) {
     return new Response(JSON.stringify({ error: batchResult.error }), { status: 500, headers: corsHeaders });
   }
