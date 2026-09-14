@@ -368,8 +368,14 @@ async function loadReviewArchive(source, page = review.page, searchTerm = review
       // count=estimated uses the planner's row estimate instead (falling back to
       // an exact count only for small result sets), which is precise enough for
       // the pagination label and eliminates the timeout under load.
+      // Always retry once on a transient 5xx (not just when searching): a
+      // reproduced burst test showed the very first concurrent request after
+      // an idle period can occasionally hit a transient 500 (Postgres
+      // 57014, cold connection/plan warm-up) even with count=estimated, while
+      // every immediately-following request succeeds. A single short-delay
+      // retry recovers from this without any user-visible error.
       { headers: { Prefer: 'count=estimated', Range: `${from}-${to}` } },
-      Boolean(searchExpr)
+      true
     );
 
     if (requestId !== review.requestSeq[source]) return;
@@ -416,11 +422,14 @@ async function loadDashboardV2() {
     dashboardV2.isLoading = true;
     renderBlueskyStatus();
 
+    // retryTransientServerError=true: same rationale as loadReviewArchive --
+    // a rare transient 500 on the very first request after idle reliably
+    // succeeds on one short-delay retry.
     const { data: aggregate } = await requestArchive('rpc/get_dashboard_v2', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
-    });
+    }, true);
 
     dashboardV2.totalCount = aggregate?.totals?.count || 0;
     const previousAggregate = dashboardV2.aggregate;
@@ -568,11 +577,13 @@ let trendTopicCache = new Map();
 async function fetchTrendBuckets(topic) {
   if (topic === 'all') return dashboardV2.aggregate?.trend || [];
   if (trendTopicCache.has(topic)) return trendTopicCache.get(topic);
+  // retryTransientServerError=true: same rationale as loadDashboardV2/
+  // loadReviewArchive -- recovers from a rare transient 500 on first request.
   const { data } = await requestArchive('rpc/get_dashboard_v2_trend', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ p_topic: topic }),
-  });
+  }, true);
   const buckets = data?.trend || [];
   trendTopicCache.set(topic, buckets);
   return buckets;
