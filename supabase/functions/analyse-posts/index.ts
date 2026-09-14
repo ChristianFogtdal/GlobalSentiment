@@ -344,7 +344,19 @@ const DEFAULT_BATCH_SIZE = 10;
 // to or over this function's ~150s idle-timeout budget, surfacing as
 // 504 IDLE_TIMEOUT / 546 WORKER_RESOURCE_LIMIT on a large share of scheduled
 // invocations. 20 posts (~60-140s) leaves real margin inside the budget.
-const MAX_BATCH_SIZE = 20;
+//
+// Raised 20 -> 25 (2026-09-14, same day): once analyse-posts-ai-sentiment's
+// cadence moved to */2 minutes (see
+// 20260914213000_analyse_posts_cadence_experiment.sql), analyse_posts_invocation_log
+// showed a stable ~3.35s/post (67.0s avg for a 20-post batch, p95 70.7s,
+// zero overlap/abandonment across 18+ runs), but realized throughput
+// (~464-488/hour) was only barely above the ~461-480/hour ingestion rate
+// measured over the same window -- not the 20-25% durable surplus needed to
+// actually drain the backlog rather than merely hold it flat. At ~3.35s/post,
+// 25 posts is ~84s/batch, still ~36s clear of the 120s cadence gap (a wider
+// margin, proportionally, than 20-post batches had under the old */5
+// cadence), raising the theoretical ceiling to 25 x 30 runs/hour = 750/hour.
+const MAX_BATCH_SIZE = 25;
 
 // Candidate selection over-fetches by this multiple of the batch size so that
 // posts claimed by a concurrent invocation between selection and claiming do

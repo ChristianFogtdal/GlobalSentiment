@@ -44,19 +44,19 @@ Deno.test('resolveBatchSize respects a valid configured value below the ceiling'
   }
 });
 
-Deno.test('resolveBatchSize clamps a configured value above the hard ceiling of 20', () => {
+Deno.test('resolveBatchSize clamps a configured value above the hard ceiling of 25', () => {
   Deno.env.set('LLM_BATCH_SIZE', '500');
   try {
-    assertEquals(resolveBatchSize(), 20);
+    assertEquals(resolveBatchSize(), 25);
   } finally {
     Deno.env.delete('LLM_BATCH_SIZE');
   }
 });
 
 Deno.test('resolveBatchSize clamps exactly at the ceiling boundary', () => {
-  Deno.env.set('LLM_BATCH_SIZE', '20');
+  Deno.env.set('LLM_BATCH_SIZE', '25');
   try {
-    assertEquals(resolveBatchSize(), 20);
+    assertEquals(resolveBatchSize(), 25);
   } finally {
     Deno.env.delete('LLM_BATCH_SIZE');
   }
