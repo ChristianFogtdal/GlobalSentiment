@@ -339,7 +339,12 @@ export async function callFoundry(params: {
 }
 
 const DEFAULT_BATCH_SIZE = 10;
-const MAX_BATCH_SIZE = 50;
+// Lowered from 50 -> 20 (2026-09-14): confirmed in production that batches
+// approaching 50 sequential Foundry calls (~3-7s each) routinely ran close
+// to or over this function's ~150s idle-timeout budget, surfacing as
+// 504 IDLE_TIMEOUT / 546 WORKER_RESOURCE_LIMIT on a large share of scheduled
+// invocations. 20 posts (~60-140s) leaves real margin inside the budget.
+const MAX_BATCH_SIZE = 20;
 
 // Candidate selection over-fetches by this multiple of the batch size so that
 // posts claimed by a concurrent invocation between selection and claiming do
