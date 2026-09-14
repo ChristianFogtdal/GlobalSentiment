@@ -357,7 +357,18 @@ async function loadReviewArchive(source, page = review.page, searchTerm = review
     const query = `${descriptor.view}?${queryParameters}`;
     const { data: analyses, totalCount } = await requestArchive(
       query,
-      { headers: { Prefer: 'count=exact', Range: `${from}-${to}` } },
+      // count=estimated (not count=exact): with 90K+ rows in the organic/filtered
+      // join, an exact count forces PostgreSQL to scan/count every matching row
+      // on every single request, on top of the paginated fetch itself. Under
+      // concurrent load (multiple tabs, the 5-minute auto-refresh, this request
+      // racing the dashboard cache refresh) that exact count intermittently blew
+      // past the anon role's statement_timeout, surfacing as a 500
+      // ("57014 canceling statement due to statement timeout") purely from the
+      // count, even though the actual page of rows would have returned quickly.
+      // count=estimated uses the planner's row estimate instead (falling back to
+      // an exact count only for small result sets), which is precise enough for
+      // the pagination label and eliminates the timeout under load.
+      { headers: { Prefer: 'count=estimated', Range: `${from}-${to}` } },
       Boolean(searchExpr)
     );
 
