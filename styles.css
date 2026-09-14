@@ -64,6 +64,8 @@ button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid
 .sentiment-scale { font-size: .16em; font-weight: 500; letter-spacing: -.02em; opacity: .5; }
 .sentiment-caption { margin: 0; color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 13px; letter-spacing: .06em; }
 
+.data-freshness { margin: 0; padding: 32px 0 clamp(48px, 8vh, 96px); color: var(--text-muted); font-family: 'DM Mono', monospace; font-size: 12px; letter-spacing: .04em; text-align: center; }
+
 .topic-cloud { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: .5em 1em; width: 100%; max-width: 900px; padding: 0 8px; }
 .topic-word { max-width: 100%; color: rgb(255 255 255 / var(--tone, .6)); font-size: min(var(--size, 1rem), 9vw); font-weight: 600; line-height: 1.15; letter-spacing: -.02em; overflow-wrap: anywhere; cursor: default; transition: color 260ms ease, transform 260ms ease; }
 .topic-word:hover { color: #fff; transform: translateY(-2px); }
