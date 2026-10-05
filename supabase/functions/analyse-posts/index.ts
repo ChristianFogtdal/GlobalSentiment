@@ -1,4 +1,6 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { boundedInteger, contentKey, hasUsefulText } from '../_shared/costControls.ts';
+import { databaseFetch, renewLease, withPipelineLease, type WorkerLease } from '../_shared/workerLease.ts';
 
 // Azure Foundry sentiment-enrichment worker: batched, sequential, scheduled
 // via cron (see supabase/migrations/20260903100000_scheduled_analyse_posts.sql),
@@ -276,6 +278,19 @@ export function buildPrompt(postText: string, originalLanguage: string | null) {
   ].join('\n');
 }
 
+export function buildFoundryRequest(deployment: string, postText: string, originalLanguage: string | null) {
+  return {
+    model: deployment,
+    messages: [
+      { role: 'system', content: 'You are a strict sentiment-analysis engine for AI-related social media posts. Respond only via the provided JSON schema.' },
+      { role: 'user', content: buildPrompt(postText, originalLanguage) },
+    ],
+    response_format: { type: 'json_schema', json_schema: RESPONSE_JSON_SCHEMA },
+    reasoning_effort: 'minimal',
+    max_completion_tokens: 2000,
+  };
+}
+
 export async function callFoundry(params: {
   endpoint: string; apiKey: string; deployment: string; model: string;
   postText: string; originalLanguage: string | null;
@@ -285,27 +300,9 @@ export async function callFoundry(params: {
   try {
     response = await fetch(url, {
       method: 'POST',
+      signal: AbortSignal.timeout(20_000),
       headers: { 'Content-Type': 'application/json', 'api-key': params.apiKey },
-      body: JSON.stringify({
-        model: params.deployment,
-        messages: [
-          { role: 'system', content: 'You are a strict sentiment-analysis engine for AI-related social media posts. Respond only via the provided JSON schema.' },
-          { role: 'user', content: buildPrompt(params.postText, params.originalLanguage) },
-        ],
-        response_format: { type: 'json_schema', json_schema: RESPONSE_JSON_SCHEMA },
-        // gpt-5-mini is a reasoning-family model on Azure OpenAI: it rejects
-        // the legacy `max_tokens` parameter (requires `max_completion_tokens`)
-        // and rejects any non-default `temperature` value (only the model's
-        // internal default is supported), per Microsoft Learn's reasoning
-        // models guidance. max_completion_tokens covers BOTH internal
-        // reasoning tokens and visible output tokens, so it must be sized
-        // well above the visible JSON payload alone or the model can return
-        // an empty completion (finish_reason: "length"). reasoning_effort
-        // is set to minimal since this is a simple, bounded classification
-        // task that does not need deep reasoning.
-        reasoning_effort: 'minimal',
-        max_completion_tokens: 2000,
-      }),
+      body: JSON.stringify(buildFoundryRequest(params.deployment, params.postText, params.originalLanguage)),
     });
   } catch (error) {
     return { ok: false, error: `Foundry request failed: ${error instanceof Error ? error.message : String(error)}` };
@@ -338,25 +335,8 @@ export async function callFoundry(params: {
   return { ok: true, raw: parsed };
 }
 
-const DEFAULT_BATCH_SIZE = 10;
-// Lowered from 50 -> 20 (2026-09-14): confirmed in production that batches
-// approaching 50 sequential Foundry calls (~3-7s each) routinely ran close
-// to or over this function's ~150s idle-timeout budget, surfacing as
-// 504 IDLE_TIMEOUT / 546 WORKER_RESOURCE_LIMIT on a large share of scheduled
-// invocations. 20 posts (~60-140s) leaves real margin inside the budget.
-//
-// Raised 20 -> 25 (2026-09-14, same day): once analyse-posts-ai-sentiment's
-// cadence moved to */2 minutes (see
-// 20260914213000_analyse_posts_cadence_experiment.sql), analyse_posts_invocation_log
-// showed a stable ~3.35s/post (67.0s avg for a 20-post batch, p95 70.7s,
-// zero overlap/abandonment across 18+ runs), but realized throughput
-// (~464-488/hour) was only barely above the ~461-480/hour ingestion rate
-// measured over the same window -- not the 20-25% durable surplus needed to
-// actually drain the backlog rather than merely hold it flat. At ~3.35s/post,
-// 25 posts is ~84s/batch, still ~36s clear of the 120s cadence gap (a wider
-// margin, proportionally, than 20-post batches had under the old */5
-// cadence), raising the theoretical ceiling to 25 x 30 runs/hour = 750/hour.
-const MAX_BATCH_SIZE = 25;
+const DEFAULT_BATCH_SIZE = 5;
+const MAX_BATCH_SIZE = 5;
 
 // Candidate selection over-fetches by this multiple of the batch size so that
 // posts claimed by a concurrent invocation between selection and claiming do
@@ -365,10 +345,7 @@ const MAX_BATCH_SIZE = 25;
 const CANDIDATE_OVERFETCH_MULTIPLIER = 2;
 
 export function resolveBatchSize(): number {
-  const raw = Deno.env.get('LLM_BATCH_SIZE');
-  const parsed = raw ? Number.parseInt(raw, 10) : DEFAULT_BATCH_SIZE;
-  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_BATCH_SIZE;
-  return Math.min(parsed, MAX_BATCH_SIZE);
+  return boundedInteger(Deno.env.get('LLM_BATCH_SIZE'), DEFAULT_BATCH_SIZE, MAX_BATCH_SIZE);
 }
 
 interface EligiblePost {
@@ -383,6 +360,7 @@ interface FoundryConfig {
   deployment: string;
   model: string;
   promptVersion: string;
+  lease: WorkerLease;
 }
 
 type PostOutcome =
@@ -390,70 +368,43 @@ type PostOutcome =
   | { outcome: 'failed'; post_uri: string; error: string }
   | { outcome: 'skipped'; post_uri: string; reason: string };
 
+export function buildAnalysisCacheKey(config: Omit<FoundryConfig, 'apiKey' | 'lease'>, post: EligiblePost): Promise<string> {
+  return contentKey([
+    config.endpoint.replace(/\/+$/, ''), config.deployment, config.model, config.promptVersion,
+    JSON.stringify(buildFoundryRequest(config.deployment, post.post_text, post.original_language)),
+  ]);
+}
+
 // Processes exactly one already-selected, already-claimed post: calls
 // Foundry, validates the structured response, and persists the result.
 // The (post_uri, prompt_version) row must already exist with
 // status='processing' (claimed via unique-constraint insert by the caller)
 // before this is invoked, so a failure here never leaves an unclaimed slot.
 export async function processClaimedPost(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   config: FoundryConfig,
   post: EligiblePost,
 ): Promise<PostOutcome> {
   const { endpoint, apiKey, deployment, model, promptVersion } = config;
+  if (!await renewLease(supabase, config.lease)) {
+    return { outcome: 'failed', post_uri: post.uri, error: 'Worker lease lost before provider call' };
+  }
   const foundryResult = await callFoundry({
     endpoint, apiKey, deployment, model,
     postText: post.post_text,
     originalLanguage: post.original_language,
   });
-  if (!foundryResult.ok) {
-    await supabase
-      .from('post_analyses_v2')
-      .update({ status: 'failed', error_message: foundryResult.error.slice(0, 500), updated_at: new Date().toISOString() })
-      .eq('post_uri', post.uri)
-      .eq('prompt_version', promptVersion);
-    return { outcome: 'failed', post_uri: post.uri, error: foundryResult.error };
+  const validation = foundryResult.ok ? validateAnalysisResponse(foundryResult.raw) : foundryResult;
+  const failure = validation.ok ? null : validation.error;
+  const result = validation.ok ? { ...validation.value, provider: 'azure_foundry', deployment, model } : null;
+  const { data: persisted, error } = await supabase.rpc('finish_post_analysis', {
+    p_post_uri: post.uri, p_prompt_version: promptVersion,
+    p_owner: config.lease.owner, p_fence: config.lease.fence, p_result: result, p_error: failure,
+  });
+  if (error || persisted !== 1) {
+    return { outcome: 'failed', post_uri: post.uri, error: error?.message ?? 'Analysis not persisted: ownership or expected row changed' };
   }
-
-  const validation = validateAnalysisResponse(foundryResult.raw);
-  if (!validation.ok) {
-    await supabase
-      .from('post_analyses_v2')
-      .update({ status: 'failed', error_message: validation.error.slice(0, 500), updated_at: new Date().toISOString() })
-      .eq('post_uri', post.uri)
-      .eq('prompt_version', promptVersion);
-    return { outcome: 'failed', post_uri: post.uri, error: validation.error };
-  }
-
-  const { value } = validation;
-  const { error: updateError } = await supabase
-    .from('post_analyses_v2')
-    .update({
-      provider: 'azure_foundry',
-      deployment,
-      model,
-      sentiment: value.sentiment,
-      sentiment_score: value.sentiment_score,
-      emotions: value.emotions,
-      topics: value.topics,
-      tools_mentioned: value.tools_mentioned,
-      ai_tooling_stance: value.ai_tooling_stance,
-      confidence: value.confidence,
-      rationale: value.rationale,
-      content_type: value.content_type,
-      content_type_reason: value.content_type_reason,
-      status: 'complete',
-      processed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      error_message: null,
-    })
-    .eq('post_uri', post.uri)
-    .eq('prompt_version', promptVersion);
-
-  if (updateError) {
-    return { outcome: 'failed', post_uri: post.uri, error: updateError.message };
-  }
-
+  if (failure) return { outcome: 'failed', post_uri: post.uri, error: failure };
   return { outcome: 'completed', post_uri: post.uri };
 }
 
@@ -461,17 +412,25 @@ export async function processClaimedPost(
 // uniqueness constraint) and, if claimed, process it. Returns null if the
 // post could not be claimed (already claimed by a concurrent/prior call).
 export async function claimAndProcess(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   config: FoundryConfig,
   post: EligiblePost,
 ): Promise<PostOutcome | null> {
-  const { error: claimError } = await supabase
-    .from('post_analyses_v2')
-    .insert({ post_uri: post.uri, prompt_version: config.promptVersion, status: 'processing' });
+  const cacheKey = await buildAnalysisCacheKey(config, post);
+  const minimumLength = boundedInteger(Deno.env.get('ANALYSIS_MIN_TEXT_LENGTH'), 8, 100);
+  if (Date.now() >= config.lease.deadline) return { outcome: 'failed', post_uri: post.uri, error: 'Worker deadline exceeded' };
+  const { data: claim, error: claimError } = await supabase.rpc('claim_post_analysis_fenced', {
+    p_post_uri: post.uri, p_prompt_version: config.promptVersion, p_cache_key: cacheKey,
+    p_owner: config.lease.owner, p_fence: config.lease.fence,
+    p_skip_reason: hasUsefulText(post.post_text, minimumLength) ? null : 'Skipped: insufficient textual content',
+  });
   if (claimError) {
-    // Unique violation means another invocation already claimed this slot.
-    return null;
+    return { outcome: 'failed', post_uri: post.uri, error: claimError.message };
   }
+  if (claim === 'skipped') return null;
+  if (claim === 'cached') return { outcome: 'completed', post_uri: post.uri };
+  if (claim === 'filtered') return { outcome: 'skipped', post_uri: post.uri, reason: 'Content filtered or prior attempt failed' };
+  if (claim !== 'claimed') return { outcome: 'failed', post_uri: post.uri, error: 'Unexpected claim response' };
   return await processClaimedPost(supabase, config, post);
 }
 
@@ -485,7 +444,7 @@ export interface BatchSummary {
 
 // Batched automatic selection. Candidate selection is delegated to the
 // select_unanalysed_posts database function, which anti-joins post_analyses_v2
-// and returns only posts that have never received a V2 analysis, oldest first.
+// and returns only recent posts that have never received a V2 analysis, newest first.
 // Filtering server-side keeps the cost of an invocation proportional to
 // the batch size rather than to the size of the already-analysed backlog, and
 // removes the need for any client-side scan bound: a bounded scan-and-skip
@@ -495,7 +454,7 @@ export interface BatchSummary {
 // Posts are still claimed and processed one at a time, so Foundry calls remain
 // sequential and capped at batchSize per invocation.
 export async function runBatch(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   config: FoundryConfig,
   batchSize: number,
 ): Promise<BatchSummary | { error: string }> {
@@ -538,7 +497,7 @@ export async function runBatch(
 // Logging failures are swallowed (never allowed to fail the actual
 // analysis work) since this is observability, not a correctness dependency.
 export async function logInvocationStart(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   batchSize: number,
 ): Promise<number | null> {
   try {
@@ -555,7 +514,7 @@ export async function logInvocationStart(
 }
 
 export async function logInvocationFinish(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
   invocationLogId: number | null,
   outcome: BatchSummary | { error: string },
 ): Promise<void> {
@@ -588,7 +547,7 @@ export async function logInvocationFinish(
 // display another. Once all environments have migrated, the env var can be
 // removed entirely and this check becomes a no-op.
 export async function resolveActivePromptVersion(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClient,
 ): Promise<{ promptVersion: string } | { error: string }> {
   const { data, error } = await supabase.rpc('get_active_prompt_version');
   if (error) return { error: `Failed to resolve active prompt version: ${error.message}` };
@@ -617,7 +576,7 @@ export async function resolveActivePromptVersion(
 // the cache no more than ~5 minutes stale. See
 // 20260914094500_dashboard_v2_cache_cron.sql.
 
-async function handleRequest(request: Request): Promise<Response> {
+export async function handleRequest(request: Request): Promise<Response> {
   if (request.method !== 'POST' || request.headers.get('x-ingestion-secret') !== Deno.env.get('INGESTION_SECRET')) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
   }
@@ -639,14 +598,17 @@ async function handleRequest(request: Request): Promise<Response> {
   if (!supabaseUrl || !supabaseServiceKey) {
     return new Response(JSON.stringify({ error: 'Supabase configuration is missing' }), { status: 500, headers: corsHeaders });
   }
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, { global: { fetch: databaseFetch } });
+
+  const intervalMinutes = boundedInteger(Deno.env.get('ANALYSIS_INTERVAL_MINUTES'), 10, 1440, 10);
+  return withPipelineLease(supabase, 'analysis', intervalMinutes * 60, async (lease) => {
 
   const promptVersionResult = await resolveActivePromptVersion(supabase);
   if ('error' in promptVersionResult) {
     return new Response(JSON.stringify({ error: promptVersionResult.error }), { status: 500, headers: corsHeaders });
   }
   const promptVersion = promptVersionResult.promptVersion;
-  const config: FoundryConfig = { endpoint, apiKey, deployment, model, promptVersion };
+  const config: FoundryConfig = { endpoint, apiKey, deployment, model, promptVersion, lease };
 
   let requestedUri: string | null = null;
   try {
@@ -668,21 +630,15 @@ async function handleRequest(request: Request): Promise<Response> {
     if (postError || !post) {
       return new Response(JSON.stringify({ selected: 0, completed: 0, failed: 0, error: 'Requested post_uri not found' }), { status: 404, headers: corsHeaders });
     }
-    const { data: existing } = await supabase
-      .from('post_analyses_v2')
-      .select('id')
-      .eq('post_uri', requestedUri)
-      .maybeSingle();
-    if (existing) {
-      return new Response(JSON.stringify({ selected: 0, completed: 0, failed: 0, skipped: 'post already has a V2 analysis' }), { headers: corsHeaders });
-    }
-
     const result = await claimAndProcess(supabase, config, post as EligiblePost);
     if (!result) {
       return new Response(JSON.stringify({ selected: 0, completed: 0, failed: 0, skipped: 'post already has a V2 analysis' }), { headers: corsHeaders });
     }
     if (result.outcome === 'completed') {
       return new Response(JSON.stringify({ selected: 1, completed: 1, failed: 0, post_uri: result.post_uri }), { headers: corsHeaders });
+    }
+    if (result.outcome === 'skipped') {
+      return new Response(JSON.stringify({ selected: 1, completed: 0, failed: 0, skipped: result.reason }), { headers: corsHeaders });
     }
     return new Response(JSON.stringify({ selected: 1, completed: 0, failed: 1, error: (result as { error: string }).error }), { headers: corsHeaders });
   }
@@ -701,6 +657,7 @@ async function handleRequest(request: Request): Promise<Response> {
   }
 
   return new Response(JSON.stringify({ selected, completed, failed, scanned, results }), { headers: corsHeaders });
+  });
 }
 
 // Only start the server when run directly by the Supabase Edge Runtime,

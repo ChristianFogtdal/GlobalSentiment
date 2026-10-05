@@ -1,5 +1,5 @@
 -- ============================================================================
--- Legacy baseline (reconstructed): public.bluesky_posts
+-- Local test baseline: public.bluesky_posts
 --
 -- Unlike post_analyses / completed_post_analyses, no CREATE TABLE for
 -- bluesky_posts exists in any tracked migration -- it predates version
@@ -14,30 +14,30 @@
 --   - the completed_post_analyses view definition (post_text, author_handle,
 --     original_language, published_at, source_url)
 --
--- This is a best-effort reconstruction for a disposable/staging/local
--- instance only. It must NEVER be applied to the hosted/production
--- project, where the real table (with its exact, possibly differing,
--- history of ad hoc changes) already exists. If the reconstructed
--- definition here turns out to diverge from production once inspected
--- directly, prefer the production definition and update this file.
+-- Corrected from user-provided live catalog results on 2026-10-05:
+-- published_at and source_url are required; fetched_at defaults to now();
+-- there is no created_at column. This file is for disposable local fixtures.
+-- It must NEVER be replayed against the hosted/production project.
 -- ============================================================================
 
 create table if not exists public.bluesky_posts (
     uri text primary key,
     author_handle text not null,
     post_text text not null,
-    original_language text,
-    published_at timestamptz,
-    source_url text,
+    published_at timestamptz not null,
+    fetched_at timestamptz not null default now(),
+    source_url text not null,
     -- Legacy rule-based scoring fields populated by ingest-bluesky-search's
     -- analysePost(); unrelated to the Foundry-based V2 pipeline.
-    sentiment_score integer,
+    sentiment_score smallint,
     sentiment_label text,
     mood text,
     emotion text,
     topic text,
     rule_evidence text,
-    created_at timestamptz not null default now()
+    original_language text,
+    has_v2_analysis boolean not null default false,
+    constraint bluesky_posts_sentiment_score_check check (sentiment_score >= 0 and sentiment_score <= 100)
 );
 
 create index if not exists bluesky_posts_published_at_idx

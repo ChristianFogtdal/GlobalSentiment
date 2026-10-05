@@ -1,5 +1,6 @@
 import { assert, assertEquals } from 'https://deno.land/std@0.224.0/assert/mod.ts';
-import { claimAndProcess } from './index.ts';
+import { buildAnalysisCacheKey, buildFoundryRequest, claimAndProcess, processClaimedPost } from './index.ts';
+import { contentKey } from '../_shared/costControls.ts';
 
 // Minimal in-memory mock of the subset of the Supabase JS client surface
 // that claimAndProcess/processClaimedPost use: .from(table).insert(...),
@@ -10,6 +11,19 @@ function createMockSupabase(options: { claimShouldFail?: (postUri: string) => bo
   const claimShouldFail = options.claimShouldFail ?? (() => false);
 
   const client = {
+    rpc(name: string, args: { p_post_uri: string; p_prompt_version: string; p_skip_reason: string | null; p_result?: Record<string, unknown>; p_error?: string }) {
+      if (name === 'renew_pipeline_lease') return Promise.resolve({ data: true, error: null });
+      if (name === 'finish_post_analysis') {
+        const row = rows.find((entry) => entry.post_uri === args.p_post_uri && entry.status === 'processing');
+        if (row) Object.assign(row, args.p_result, { status: args.p_error ? 'failed' : 'complete' });
+        return Promise.resolve({ data: row ? 1 : 0, error: null });
+      }
+      if (claimShouldFail(args.p_post_uri) || rows.some((row) => row.post_uri === args.p_post_uri)) {
+        return Promise.resolve({ data: 'skipped', error: null });
+      }
+      rows.push({ post_uri: args.p_post_uri, prompt_version: args.p_prompt_version, status: args.p_skip_reason ? 'failed' : 'processing' });
+      return Promise.resolve({ data: args.p_skip_reason ? 'filtered' : 'claimed', error: null });
+    },
     from(table: string) {
       assertEquals(table, 'post_analyses_v2');
       return {
@@ -48,6 +62,7 @@ const baseConfig = {
   deployment: 'test-deployment',
   model: 'test-model',
   promptVersion: 'v1',
+  lease: { pipeline: 'analysis' as const, owner: '11111111-1111-4111-8111-111111111111', fence: 1, deadline: Number.MAX_SAFE_INTEGER },
 };
 
 function mockFetchSuccess() {
@@ -124,9 +139,9 @@ Deno.test('claimAndProcess returns null when the (post_uri, prompt_version) slot
 Deno.test('a batch loop continues past an individual failed post to complete the rest', async () => {
   const originalFetch = globalThis.fetch;
   const posts = [
-    { uri: 'at://post/a', post_text: 'first', original_language: 'en' },
+    { uri: 'at://post/a', post_text: 'first AI opinion', original_language: 'en' },
     { uri: 'at://post/b', post_text: 'second (will fail)', original_language: 'en' },
-    { uri: 'at://post/c', post_text: 'third', original_language: 'en' },
+    { uri: 'at://post/c', post_text: 'third AI opinion', original_language: 'en' },
   ];
   // Fail only the second Foundry call, succeed the first and third.
   let callIndex = 0;
@@ -161,4 +176,65 @@ Deno.test('a batch loop continues past an individual failed post to complete the
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+Deno.test('cache hits, in-flight duplicates and filtered content never call Foundry', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('Provider must not be called'); };
+  try {
+    for (const status of ['cached', 'skipped', 'filtered']) {
+      const client = { rpc: () => Promise.resolve({ data: status, error: null }) };
+      const result = await claimAndProcess(client as unknown as Parameters<typeof claimAndProcess>[0], baseConfig, {
+        uri: 'at://cached', post_text: 'AI tools improve my workflow', original_language: 'en',
+      });
+      assertEquals(result?.outcome ?? null, status === 'cached' ? 'completed' : status === 'filtered' ? 'skipped' : null);
+    }
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+Deno.test('claim database errors are reported rather than treated as duplicate success', async () => {
+  const client = { rpc: () => Promise.resolve({ data: null, error: { message: 'database unavailable' } }) };
+  const result = await claimAndProcess(client as unknown as Parameters<typeof claimAndProcess>[0], baseConfig, {
+    uri: 'at://failure', post_text: 'AI tools improve my workflow', original_language: 'en',
+  });
+  assertEquals(result, { outcome: 'failed', post_uri: 'at://failure', error: 'database unavailable' });
+});
+
+Deno.test('zero-row completion after deletion or ownership change never reports success', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = mockFetchSuccess();
+  try {
+    const client = { rpc: (name: string) => Promise.resolve({ data: name === 'renew_pipeline_lease' ? true : 0, error: null }) };
+    const result = await processClaimedPost(client as unknown as Parameters<typeof processClaimedPost>[0], baseConfig, {
+      uri: 'at://deleted', post_text: 'AI opinion about capabilities', original_language: 'en',
+    });
+    assertEquals(result.outcome, 'failed');
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+Deno.test('expired or replaced worker lease prevents another provider call', async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = () => { calls += 1; throw new Error('Must not call provider'); };
+  try {
+    const client = { rpc: () => Promise.resolve({ data: false, error: null }) };
+    const result = await processClaimedPost(client as unknown as Parameters<typeof processClaimedPost>[0], baseConfig, {
+      uri: 'at://stale', post_text: 'AI opinion about capabilities', original_language: 'en',
+    });
+    assertEquals(result.outcome, 'failed');
+    assertEquals(calls, 0);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+Deno.test('cache key includes the entire transmitted request and explicit model contract', async () => {
+  const post = { uri: 'at://hash', post_text: 'AI tools improve my workflow', original_language: 'en' };
+  const request = buildFoundryRequest(baseConfig.deployment, post.post_text, post.original_language);
+  const parts = [baseConfig.endpoint, baseConfig.deployment, baseConfig.model, baseConfig.promptVersion];
+  const key = await buildAnalysisCacheKey(baseConfig, post);
+  assertEquals(key, await contentKey([...parts, JSON.stringify(request)]));
+  assertEquals(key, await buildAnalysisCacheKey({ ...baseConfig, endpoint: `${baseConfig.endpoint}/` }, post));
+  request.messages[0].content = 'Changed system contract';
+  assert(key !== await contentKey([...parts, JSON.stringify(request)]));
+  assert(key !== await buildAnalysisCacheKey({ ...baseConfig, model: 'new-revision' }, post));
+  assert(key !== await buildAnalysisCacheKey({ ...baseConfig, promptVersion: 'v2' }, post));
 });

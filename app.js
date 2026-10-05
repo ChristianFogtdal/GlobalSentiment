@@ -1,16 +1,16 @@
-// Full-history dashboard metrics now come from the server aggregate
+// Rolling-window dashboard metrics come from the server aggregate
 // (public.get_dashboard_v2()); there is no client-side time/emotion/topic
 // filter state anymore (the filter controls were removed previously; the
 // topic-scoped trend chart is driven solely by `trendTopic`).
 const $ = (id) => document.getElementById(id);
 const number = new Intl.NumberFormat('en-US');
-const ARCHIVE_REFRESH_MS = 5 * 60 * 1000;
+const ARCHIVE_REFRESH_MS = 60 * 60 * 1000;
 const SUPABASE_URL = 'https://bsnzcspfrmlihwxqkjyv.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_JXgoo-lTxuflm4CakgfuTQ_IH3AZ6V9';
 const REVIEW_SEARCH_DEBOUNCE_MS = 400;
 const TRANSIENT_REQUEST_RETRY_DELAY_MS = 300;
-const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
-const filteredV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
+const blueskyV2 = { posts: [], isLoading: false, error: '', totalCount: 0, lastFetchedAt: 0 };
+const filteredV2 = { posts: [], isLoading: false, error: '', totalCount: 0, lastFetchedAt: 0 };
 // Dedicated dataset for the main Dashboard/map view, sourced from the
 // server-aggregated public.get_dashboard_v2() RPC (all completed Foundry
 // prompt versions). Fully independent from `blueskyV2`/`filteredV2`, which
@@ -18,7 +18,7 @@ const filteredV2 = { posts: [], isLoading: false, error: '', totalCount: 0 };
 //   - aggregate: the full-history totals/topics/emotions/trend payload.
 //   - recent: the bounded recent-post feed (labelled as such in the UI);
 //     never treated as, or merged into, a pretend full archive.
-const dashboardV2 = { aggregate: null, recent: [], isLoading: false, error: '', totalCount: 0, lastLoadedAt: null };
+const dashboardV2 = { aggregate: null, recent: [], isLoading: false, error: '', totalCount: 0, lastLoadedAt: null, lastFetchedAt: 0 };
 const REVIEW_PAGE_SIZE = 100;
 // Monotonically increasing request counters, used to discard stale/out-of-order
 // responses (e.g. an older keystroke's request resolving after a newer one),
@@ -189,16 +189,10 @@ function archiveDashboardData() {
 function trendSeriesFromBuckets(buckets) {
   if (!buckets || !buckets.length) return { points: [], score: null, items: 0 };
 
-  // The archive is front-loaded with a sparse bootstrap/backfill period, so
-  // anchoring the axis to the full span would leave the line crushed against
-  // one edge and make the early, thinly-sampled period look meaningful. The
-  // displayed range is hardcoded to start at the first bucket that captures
-  // meaningful, continuous data collection; earlier buckets are still present
-  // in the underlying data/aggregation, they are simply not displayed.
-  const CHART_START_MS = Date.UTC(2026, 8, 2, 9, 0, 0); // Sep 2, 09:00 UTC
+  const windowStart = Math.floor((Date.now() - 30 * 24 * HOUR_MS) / HOUR_MS);
   const byKey = new Map(buckets.map((bucket) => [Math.floor(new Date(bucket.bucket_start).getTime() / HOUR_MS), bucket]));
   const keys = [...byKey.keys()].sort((first, second) => first - second);
-  const start = Math.floor(CHART_START_MS / HOUR_MS);
+  const start = Math.max(windowStart, keys[0]);
   const end = keys.length ? keys[keys.length - 1] : start;
 
   const points = [];
@@ -379,6 +373,7 @@ async function loadReviewArchive(source, page = review.page, searchTerm = review
     );
 
     if (requestId !== review.requestSeq[source]) return;
+    state.lastFetchedAt = Date.now();
     state.totalCount = totalCount;
     if (!analyses || analyses.length === 0) {
       state.error = searchTerm.trim()
@@ -432,6 +427,7 @@ async function loadDashboardV2() {
     }, true);
 
     dashboardV2.totalCount = aggregate?.totals?.count || 0;
+    dashboardV2.lastFetchedAt = Date.now();
     const previousAggregate = dashboardV2.aggregate;
     const isUnchangedGeneration = Boolean(
       aggregate?.generated_at
@@ -925,11 +921,13 @@ function setActiveView(view) {
   });
   if (view === 'data-review') {
     const { state } = reviewSources[review.source];
-    if (!state.posts.length && !state.isLoading && !state.error) {
-      loadReviewData(1);
+    if (!state.isLoading && Date.now() - state.lastFetchedAt >= ARCHIVE_REFRESH_MS) {
+      loadReviewData();
     } else {
       renderDataReview();
     }
+  } else {
+    void refreshActiveView();
   }
 }
 
@@ -994,29 +992,25 @@ document.getElementById('reviewSearch')?.addEventListener('input', (event) => {
   }, REVIEW_SEARCH_DEBOUNCE_MS);
 });
 
+async function refreshActiveView(scheduled = false) {
+  if (document.hidden) return;
+  const state = activeView === 'data-review' ? reviewSources[review.source].state : dashboardV2;
+  if (state.isLoading || (!scheduled && Date.now() - state.lastFetchedAt < ARCHIVE_REFRESH_MS)) return;
+  if (activeView === 'data-review') await loadReviewData();
+  else await loadDashboardV2();
+}
+
 // Initial load
 async function init() {
   // Render the empty archive state while the persisted data loads.
   renderDashboard(selectedData());
   
-  // Load persisted V2 (Foundry) sentiment analyses for the main dashboard,
-  // and the Organic archive for the Data review tab's default source.
-  await Promise.all([loadDashboardV2(), loadReviewData()]);
+  await loadDashboardV2();
   renderDashboard(selectedData());
   renderFreshness();
   
-  // Refresh archives periodically. The dashboard aggregation now uses the V2
-  // (Foundry) source; the Data review tab additionally refreshes whichever
-  // source is currently toggled on, preserving its current page and search term.
-  setInterval(() => {
-    if (document.hidden || dashboardV2.isLoading) return;
-    void Promise.all([loadDashboardV2(), loadReviewData()]);
-  }, ARCHIVE_REFRESH_MS);
-
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden || dashboardV2.isLoading) return;
-    void Promise.all([loadDashboardV2(), loadReviewData()]);
-  });
+  setInterval(() => { void refreshActiveView(true); }, ARCHIVE_REFRESH_MS);
+  document.addEventListener('visibilitychange', () => { void refreshActiveView(); });
 
   // Keep the "Updated Xm ago" freshness label current between archive reloads.
   setInterval(renderFreshness, 30 * 1000);

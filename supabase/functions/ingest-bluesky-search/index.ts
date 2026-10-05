@@ -1,4 +1,6 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { collectionLimits, hasUsefulText, isRecent, searchPlan } from '../_shared/costControls.ts';
+import { databaseFetch, renewLease, withPipelineLease } from '../_shared/workerLease.ts';
 
 const SEARCH_TERMS = [
   'artificial intelligence',
@@ -60,45 +62,38 @@ const SEARCH_TERMS = [
   'AI education',
   'open source AI',
 ];
-const POSTS_PER_TERM = 5;
 const corsHeaders = { 'Content-Type': 'application/json' };
 
-function containsTerm(text: string, term: string) {
-  return text.toLowerCase().includes(term.toLowerCase());
+interface SearchPost {
+  uri?: string;
+  author?: { handle?: string };
+  record?: { text?: string; langs?: string[]; createdAt?: string };
+  indexedAt?: string;
 }
 
-function analysePost(text: string) {
-  const positiveTerms = ['advance', 'improve', 'safe', 'accessible', 'benefit', 'progress'];
-  const negativeTerms = ['risk', 'harm', 'threat', 'outage', 'concern', 'failure', 'critical'];
-  const topicTerms = [
-    ['AI coding', ['copilot', 'cursor', 'claude code', 'windsurf', 'vibe coding', 'ai coding']],
-    ['AI safety', ['safety', 'safe', 'risk', 'harm']],
-    ['Model evaluation', ['evaluation', 'benchmark', 'capability', 'model']],
-  ] as const;
-  const matchedPositive = positiveTerms.filter((term) => containsTerm(text, term));
-  const matchedNegative = negativeTerms.filter((term) => containsTerm(text, term));
-  const score = Math.max(0, Math.min(100, 50 + matchedPositive.length * 8 - matchedNegative.length * 10));
-  const leadingTopic = topicTerms
-    .map(([name, terms]) => [name, terms.filter((term) => containsTerm(text, term))] as const)
-    .sort((first, second) => second[1].length - first[1].length)[0];
-  const topic = leadingTopic?.[0] ?? 'General AI';
-  const topicMatches = leadingTopic?.[1] ?? [];
-  const evidence = [
-    ...matchedPositive.map((term) => `positive: ${term}`),
-    ...matchedNegative.map((term) => `negative: ${term}`),
-    ...topicMatches.map((term) => `topic: ${term}`),
-  ];
-  return {
-    sentiment_score: score,
-    sentiment_label: score >= 75 ? 'Very positive' : score >= 60 ? 'Positive' : score >= 45 ? 'Mixed' : score >= 25 ? 'Negative' : 'Very negative',
-    mood: score >= 60 ? 'Upbeat' : score <= 40 ? 'Downbeat' : 'Mixed',
-    emotion: topic === 'AI safety' ? 'Caution' : topic === 'Model evaluation' ? 'Curiosity' : topic === 'AI coding' ? 'Excitement' : 'Neutral',
-    topic,
-    rule_evidence: evidence.length ? evidence.join('; ') : 'No configured rule matched',
-  };
+export function prepareRows(posts: SearchPost[], maximum: number, now = Date.now()) {
+  const rows = new Map<string, {
+    uri: string; author_handle: string; post_text: string; original_language: string | null;
+    published_at: string; source_url: string;
+  }>();
+  for (const post of posts) {
+    const text = post.record?.text?.replace(/\s+/g, ' ').trim();
+    const rkey = post.uri?.split('/').at(-1);
+    const publishedAt = post.record?.createdAt || post.indexedAt;
+    if (!post.uri || !text || !hasUsefulText(text) || !post.author?.handle || !rkey || !isRecent(publishedAt, now)) continue;
+    if (rows.has(post.uri)) continue;
+    rows.set(post.uri, {
+      uri: post.uri, author_handle: post.author.handle, post_text: text,
+      original_language: post.record?.langs?.[0] ?? null,
+      published_at: publishedAt!,
+      source_url: `https://bsky.app/profile/${post.author.handle}/post/${rkey}`,
+    });
+    if (rows.size >= maximum) break;
+  }
+  return [...rows.values()];
 }
 
-Deno.serve(async (request) => {
+export async function handleRequest(request: Request): Promise<Response> {
   if (request.method !== 'POST' || request.headers.get('x-ingestion-secret') !== Deno.env.get('INGESTION_SECRET')) {
     return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: corsHeaders });
   }
@@ -109,44 +104,57 @@ Deno.serve(async (request) => {
     return new Response(JSON.stringify({ error: 'Bluesky credentials are not configured' }), { status: 500, headers: corsHeaders });
   }
 
-  const sessionResponse = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier: handle, password: appPassword }),
-  });
-  if (!sessionResponse.ok) {
-    return new Response(JSON.stringify({ error: `Bluesky session request failed: ${sessionResponse.status}` }), { status: 502, headers: corsHeaders });
+  const supabaseUrl = Deno.env.get('SUPABASE_URL');
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (!supabaseUrl || !serviceKey) {
+    return new Response(JSON.stringify({ error: 'Supabase configuration is missing' }), { status: 500, headers: corsHeaders });
   }
-  const { accessJwt } = await sessionResponse.json();
-
-  const results = await Promise.all(SEARCH_TERMS.map(async (term) => {
-    const parameters = new URLSearchParams({ q: term, limit: String(POSTS_PER_TERM), sort: 'latest' });
-    const response = await fetch(`https://bsky.social/xrpc/app.bsky.feed.searchPosts?${parameters}`, {
-      headers: { Authorization: `Bearer ${accessJwt}` },
+  const supabase = createClient(supabaseUrl, serviceKey, { global: { fetch: databaseFetch } });
+  const limits = collectionLimits((name) => Deno.env.get(name));
+  return withPipelineLease(supabase, 'bluesky_ingestion', limits.intervalMinutes * 60, async (lease) => {
+  try {
+    if (!await renewLease(supabase, lease)) throw new Error('Worker lease lost');
+    const sessionResponse = await fetch('https://bsky.social/xrpc/com.atproto.server.createSession', {
+      method: 'POST',
+      signal: AbortSignal.timeout(10_000),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier: handle, password: appPassword }),
     });
-    if (!response.ok) throw new Error(`Search for ${term} failed: ${response.status}`);
-    return response.json();
-  }));
+    if (!sessionResponse.ok) {
+      return new Response(JSON.stringify({ error: `Bluesky session request failed: ${sessionResponse.status}` }), { status: 502, headers: corsHeaders });
+    }
+    const { accessJwt } = await sessionResponse.json();
 
-  const rows = [...new Map(results.flatMap((result) => result.posts || []).map((post) => {
-    const text = post.record?.text?.replace(/\s+/g, ' ').trim();
-    const rkey = post.uri?.split('/').at(-1);
-    if (!post.uri || !text || !post.author?.handle || !rkey) return [post.uri, null];
-    return [post.uri, {
-      uri: post.uri,
-      author_handle: post.author.handle,
-      post_text: text,
-      original_language: post.record?.langs?.[0] ?? null,
-      published_at: post.record.createdAt || post.indexedAt,
-      source_url: `https://bsky.app/profile/${post.author.handle}/post/${rkey}`,
-      ...analysePost(text),
-    }];
-  })).values()].filter(Boolean);
+    const plan = searchPlan(SEARCH_TERMS, limits);
+    const since = new Date(Date.now() - limits.intervalMinutes * 60_000).toISOString();
+    const results = await Promise.allSettled(plan.map(async ({ term, limit }) => {
+      const parameters = new URLSearchParams({ q: term, limit: String(limit), sort: 'latest', since });
+      const response = await fetch(`https://bsky.social/xrpc/app.bsky.feed.searchPosts?${parameters}`, {
+        signal: AbortSignal.timeout(10_000),
+        headers: { Authorization: `Bearer ${accessJwt}` },
+      });
+      if (!response.ok) throw new Error(`Search for ${term} failed: ${response.status}`);
+      const result = await response.json();
+      return (Array.isArray(result.posts) ? result.posts.slice(0, limit) : []) as SearchPost[];
+    }));
 
-  const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-  const { error } = await supabase.from('bluesky_posts').upsert(rows, { onConflict: 'uri', ignoreDuplicates: true });
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+    const failedSearches = results.filter((result) => result.status === 'rejected').length;
+    if (failedSearches === plan.length) {
+      return new Response(JSON.stringify({ error: 'All Bluesky searches failed' }), { status: 502, headers: corsHeaders });
+    }
+    const rows = prepareRows(results.flatMap((result) => result.status === 'fulfilled' ? result.value : []), limits.postsPerRun);
+
+    const { error } = rows.length
+      ? await supabase.rpc('ingest_posts_fenced', { p_owner: lease.owner, p_fence: lease.fence, p_rows: rows })
+      : { error: null };
+    if (error) {
+      return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: corsHeaders });
+    }
+    return new Response(JSON.stringify({ searchedTerms: plan.length, failedSearches, candidates: rows.length }), { headers: corsHeaders });
+  } catch {
+    return new Response(JSON.stringify({ error: 'Bluesky collection failed or timed out' }), { status: 502, headers: corsHeaders });
   }
-  return new Response(JSON.stringify({ searchedTerms: SEARCH_TERMS.length, candidates: rows.length }), { headers: corsHeaders });
-});
+  });
+}
+
+if (import.meta.main) Deno.serve(handleRequest);

@@ -8,7 +8,7 @@ import { runBatch } from './index.ts';
 function createMockSupabase(postCount: number, analysedUris: Set<string>) {
   const posts = Array.from({ length: postCount }, (_, index) => ({
     uri: `at://post/${index}`,
-    post_text: `post ${index}`,
+    post_text: `AI opinion ${index}`,
     original_language: 'en',
   }));
   const rows: Array<Record<string, unknown>> = [...analysedUris].map((uri) => ({
@@ -17,7 +17,18 @@ function createMockSupabase(postCount: number, analysedUris: Set<string>) {
   let lastLimit: number | null = null;
 
   const client = {
-    rpc(fn: string, args: { p_prompt_version: string; p_limit: number }) {
+    rpc(fn: string, args: { p_prompt_version: string; p_limit: number; p_post_uri?: string; p_result?: Record<string, unknown>; p_error?: string }) {
+      if (fn === 'renew_pipeline_lease') return Promise.resolve({ data: true, error: null });
+      if (fn === 'finish_post_analysis') {
+        const row = rows.find((entry) => entry.post_uri === args.p_post_uri && entry.status === 'processing');
+        if (row) Object.assign(row, args.p_result, { status: args.p_error ? 'failed' : 'complete' });
+        return Promise.resolve({ data: row ? 1 : 0, error: null });
+      }
+      if (fn === 'claim_post_analysis_fenced') {
+        if (rows.some((row) => row.post_uri === args.p_post_uri)) return Promise.resolve({ data: 'skipped', error: null });
+        rows.push({ post_uri: args.p_post_uri, prompt_version: args.p_prompt_version, status: 'processing' });
+        return Promise.resolve({ data: 'claimed', error: null });
+      }
       assertEquals(fn, 'select_unanalysed_posts');
       lastLimit = args.p_limit;
       const eligible = posts.filter((post) => !rows.some(
@@ -61,6 +72,7 @@ const baseConfig = {
   deployment: 'test-deployment',
   model: 'test-model',
   promptVersion: 'v1',
+  lease: { pipeline: 'analysis' as const, owner: '11111111-1111-4111-8111-111111111111', fence: 1, deadline: Number.MAX_SAFE_INTEGER },
 };
 
 function mockFetchSuccess() {
