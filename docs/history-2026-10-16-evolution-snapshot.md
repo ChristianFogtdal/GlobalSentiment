@@ -1,3 +1,16 @@
+# Historical evolution narrative: snapshot October 16, 2026
+
+**Historical narrative, not current capabilities or operational instructions.**
+Original location: `THOUGHT_PROCESS_AND_EVOLUTION.md`. Its original authorship
+date is not established; the filename records capture on 2026-10-16, not a claim
+that the narrative was written then. Claims about legacy enrichment/review and
+future scoring decisions are preserved as historical statements.
+Only this label and mechanical reference repairs were added during relocation.
+
+Use [architecture](architecture.md) for implemented behavior and
+[product intent](product-prd.md) for deferred scope.
+
+<!-- Preserved original document begins below. -->
 # SentimentMap: Thought Process and Evolution
 
 ## Purpose of this overview
@@ -88,11 +101,11 @@ This order protects the original promise of the project: useful, inspectable ins
 
 ## Evidence used
 
-- `global-mood-intelligence-prd.md`: product vision, six-layer scope, principles, responsible-AI constraints, and MVP.
+- `product-prd.md`: product vision, six-layer scope, principles, responsible-AI constraints, and MVP.
 - `index.html` and `app.js`: the current dashboard features and its dependency on V2 dashboard aggregate RPCs.
 - `supabase/functions/ingest-bluesky-search/index.ts`: scheduled Bluesky collection and deterministic legacy enrichment.
 - `supabase/functions/analyse-posts/index.ts` and its tests: the scheduled Azure Foundry V2 worker and response-contract tests.
 - `supabase/migrations/20260902210000_post_analyses_v2.sql`: isolated V2 storage, access control, provenance, and uniqueness guarantees.
-- `README.md`: current operational boundaries, dashboard scope, and V2 access rules.
+- `history-2026-10-16-readme.md`: current operational boundaries, dashboard scope, and V2 access rules.
 
 Some older root-level implementation reports describe a previous integrated LLM architecture. They are useful historical evidence of intent, but current code and the latest SentimentMap README take precedence for the present-state description above.

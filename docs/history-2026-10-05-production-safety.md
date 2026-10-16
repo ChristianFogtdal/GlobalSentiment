@@ -1,3 +1,17 @@
+# Historical safety repair: October 5, 2026
+
+**Historical evidence, not current operational instructions.** Original
+location: `PRODUCTION_SAFETY.md`. This preserves the October 5 repair, rollout
+decisions, accepted risks and validation limits. Earlier prerequisites and
+recommendations are retained, not rewritten as current instructions.
+Only this label and mechanical reference repairs were added during relocation
+on 2026-10-16.
+
+Use [current status](../CURRENT_PROJECT_STATUS.md), [database](database.md) and
+[operations](operations.md) for current state/contracts. Historical risk
+acceptance is not standing permission for further production work.
+
+<!-- Preserved original document begins below. -->
 # Production Safety Repair
 
 ## Live Rollout Decision (2026-10-05)
@@ -309,15 +323,15 @@ recommended by the runner. Local Application Control prevented executing it here
 
 ## Changes
 
-- [Fenced pipeline migration](supabase/migrations/20261005100000_fenced_pipeline.sql): leases, ownership FKs, guarded claims/completion/ingestion/recovery, write privileges.
-- [Safe retention migration](supabase/migrations/20261005101000_safe_retention.sql): audit protection, ownership exclusion, caller guards and UTC.
-- [Caller timeout migration](supabase/migrations/20261005102000_retention_caller_timeout.sql): inactive cron with caller SET statements.
-- [UTC reporting migration](supabase/migrations/20261005103000_utc_reporting.sql): effective publication timestamp, UTC aggregation and stale generation rejection.
-- [Lease helper](supabase/functions/_shared/workerLease.ts) and both [analysis](supabase/functions/analyse-posts/index.ts) / [ingestion](supabase/functions/ingest-bluesky-search/index.ts) workers: fenced lifecycle and bounded HTTP.
-- [Shared controls](supabase/functions/_shared/costControls.ts) and [browser](app.js): explicit timestamps, server cutoff and stable scheduled polling.
-- [SQL regressions](supabase/scripts/test-production-safety.mjs), [native race runner](supabase/scripts/test-concurrency-postgres.mjs), [lease tests](supabase/functions/_shared/workerLease.test.ts), existing batch/ingestion tests and Node runner.
+- [Fenced pipeline migration](../supabase/migrations/20261005100000_fenced_pipeline.sql): leases, ownership FKs, guarded claims/completion/ingestion/recovery, write privileges.
+- [Safe retention migration](../supabase/migrations/20261005101000_safe_retention.sql): audit protection, ownership exclusion, caller guards and UTC.
+- [Caller timeout migration](../supabase/migrations/20261005102000_retention_caller_timeout.sql): inactive cron with caller SET statements.
+- [UTC reporting migration](../supabase/migrations/20261005103000_utc_reporting.sql): effective publication timestamp, UTC aggregation and stale generation rejection.
+- [Lease helper](../supabase/functions/_shared/workerLease.ts) and both [analysis](../supabase/functions/analyse-posts/index.ts) / [ingestion](../supabase/functions/ingest-bluesky-search/index.ts) workers: fenced lifecycle and bounded HTTP.
+- [Shared controls](../supabase/functions/_shared/costControls.ts) and [browser](../app.js): explicit timestamps, server cutoff and stable scheduled polling.
+- [SQL regressions](../supabase/scripts/test-production-safety.mjs), [native race runner](../supabase/scripts/test-concurrency-postgres.mjs), [lease tests](../supabase/functions/_shared/workerLease.test.ts), existing batch/ingestion tests and Node runner.
 - Earlier unapplied retention migration excludes audit logs too; existing test fixture expectations changed accordingly. Older deployed migrations were not executed.
-- README, cost report and [operator SQL](supabase/scripts/retention-operations.sql) point to this policy.
+- README, cost report and [operator SQL](../supabase/scripts/retention-operations.sql) point to this policy.
 
 ## Rollout And Remaining Risks
 

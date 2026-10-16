@@ -1,3 +1,22 @@
+# Product intent and implementation boundary
+
+**Product intent, not deployed capability or operational instructions.**
+Relocated on 2026-10-16 from `global-mood-intelligence-prd.md`; original authorship
+date is not established. The original PRD follows unchanged except for any
+mechanical reference repairs. Its requirements have not been silently narrowed
+to match implementation.
+
+Implemented: sentiment totals, topics, emotions, topic-filtered trends and
+paginated V2 Data Review. Deferred: maps/country inference, mood-shift detection,
+model-generated explanations and cross-dashboard filters. Analysis and recovery
+are currently disabled by operating decision; see [current status](../CURRENT_PROJECT_STATUS.md)
+and [architecture](architecture.md).
+
+**Unresolved product question:** the PRD says not to expose individual people,
+while current Data Review displays public author handles, posts and per-post
+results. Documentation relocation does not resolve or approve that policy gap.
+
+<!-- Preserved original document begins below. -->
 # Product Requirements Document: Global Mood Intelligence
 
 ## 1. Product Overview

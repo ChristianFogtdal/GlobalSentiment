@@ -1,3 +1,16 @@
+# Historical content-type plan: September 10, 2026
+
+**Completed historical plan, not current operational instructions.** Original
+location: `plan.md`. The date comes from its implementation-status section.
+Prompt-version, UI and validation statements describe that historical work,
+not today's source or deployment. Only this label and mechanical reference
+repairs were added during relocation on 2026-10-16.
+
+Use [architecture](architecture.md), [database](database.md) and
+[current status](../CURRENT_PROJECT_STATUS.md) for the current implementation
+and approved work. Do not invoke the paid examples as documentation validation.
+
+<!-- Preserved original document begins below. -->
 # Plan: Content-type classification (organic/promotional/spam)
 
 ## Steps

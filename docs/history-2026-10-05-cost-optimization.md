@@ -1,3 +1,16 @@
+# Historical cost audit: October 5, 2026
+
+**Historical audit, not current operational instructions.** Original location:
+`COST_OPTIMIZATION.md`. This record contains pre-change analysis, estimates and
+claims subsequently superseded by the safety repair. Its recommendations and
+results retain their original meaning; do not treat them as current guarantees.
+Only this label and mechanical reference repairs were added during relocation
+on 2026-10-16.
+
+Use [current status](../CURRENT_PROJECT_STATUS.md), [database](database.md) and
+[operations](operations.md) for current contracts and approval boundaries.
+
+<!-- Preserved original document begins below. -->
 # Recent Sentiment Cost Controls
 
 > Live schema verified from user-supplied catalog results on 2026-10-05:
@@ -6,7 +19,7 @@
 > old raw-creation fallback assumptions in this historical audit are superseded.
 > The user accepted no backup and no staging; see the safety report for scope.
 
-> Superseded safety claims: [PRODUCTION_SAFETY.md](PRODUCTION_SAFETY.md) is the
+> Superseded safety claims: [history-2026-10-05-production-safety.md](history-2026-10-05-production-safety.md) is the
 > authoritative correctness/rollout report after the independent review.
 > Operational/audit logs are now protected indefinitely. Lease fencing replaces
 > start-time admission, expired cache entries are recoverable misses, and crashed
@@ -30,7 +43,7 @@ have not been inspected. No hosted writes or deletion have been authorized.
 
 ### Data Flow And Storage
 
-- [ingest-bluesky-search](supabase/functions/ingest-bluesky-search/index.ts)
+- [ingest-bluesky-search](../supabase/functions/ingest-bluesky-search/index.ts)
   authenticates to Bluesky `com.atproto.server.createSession`, then runs all 58
   `app.bsky.feed.searchPosts` searches concurrently, five posts per term. Maximum
   290 candidates and 59 external requests/run, before overlap. No pagination,
@@ -39,7 +52,7 @@ have not been inspected. No hosted writes or deletion have been authorized.
   `onConflict: 'uri', ignoreDuplicates: true`. The URI primary key already
   prevents duplicate inserts and unchanged updates. Raw rows also contain
   redundant deterministic legacy sentiment fields produced by `analysePost`.
-- [analyse-posts](supabase/functions/analyse-posts/index.ts) resolves
+- [analyse-posts](../supabase/functions/analyse-posts/index.ts) resolves
   `get_active_prompt_version`, selects through `select_unanalysed_posts`, inserts
   one processing row per post and sends one Azure Foundry chat completion per
   claim. Completion writes the validated fields, not the full provider response.
@@ -54,19 +67,19 @@ have not been inspected. No hosted writes or deletion have been authorized.
   published-time index and skips **all** previously claimed versions/statuses.
   Failed claims currently swallow every database error as though it were a
   duplicate. There is no content cache across different URIs.
-- [stale recovery](supabase/migrations/20260914201500_reclaim_stuck_processing_analyses.sql)
+- [stale recovery](../supabase/migrations/20260914201500_reclaim_stuck_processing_analyses.sql)
   deletes processing rows after ten minutes and resets the raw marker. That can
   repeat a paid AI call whose response/persistence was lost. Legacy
   `claim_posts_for_analysis` defaults to batch 10 / maximum retries 3, but no
   tracked worker or schedule calls it. `ensure_analysis_records`,
   `update_analysis_result`, and `mark_analysis_failed` remain legacy RPCs.
-- [dashboard refresh](supabase/migrations/20260914091500_dashboard_v2_cache_refresh_functions.sql)
+- [dashboard refresh](../supabase/migrations/20260914091500_dashboard_v2_cache_refresh_functions.sql)
   computes full-history organic aggregates and top-20 topic trends, writes one
   JSON cache generation plus one log row, and keeps three generations. A session
   advisory lock avoids concurrent refreshes. Refresh timeout is 240 seconds;
   compute functions have 20-second settings and 256 MB work memory. Historical
   comments report 60-140 second refreshes; these are not current measurements.
-- [browser](app.js) polls every five minutes, fetching both the dashboard cache
+- [browser](../app.js) polls every five minutes, fetching both the dashboard cache
   and an unused review page, and refetches on every visibility change. Review
   pages are 100 rows with estimated counts, 400 ms search debounce and one
   300 ms retry after 5xx. Cached topic misses run live aggregate SQL. Static HTML,
@@ -96,10 +109,10 @@ and operational log growth separately; no custom deletion is added for them.
 
 | Job | Old frequency | Evidence |
 | --- | --- | --- |
-| `ingest-bluesky-ai-coding-posts` | Every 15 minutes, documented only | [README](README.md); earliest ingestion migration only sets RLS/index, not cron |
-| `analyse-posts-ai-sentiment` | `*/2 * * * *`, 30/hour | [cadence experiment](supabase/migrations/20260914213000_analyse_posts_cadence_experiment.sql) |
-| `dashboard-v2-cache-refresh-safety-net` | `2-59/5 * * * *`, 12/hour | [cache offset](supabase/migrations/20260914165500_dashboard_v2_cache_cron_offset.sql) |
-| `reclaim-stuck-processing-analyses` | `3-59/10 * * * *`, 6/hour | [stale recovery](supabase/migrations/20260914201500_reclaim_stuck_processing_analyses.sql) |
+| `ingest-bluesky-ai-coding-posts` | Every 15 minutes, documented only | [README](history-2026-10-16-readme.md); earliest ingestion migration only sets RLS/index, not cron |
+| `analyse-posts-ai-sentiment` | `*/2 * * * *`, 30/hour | [cadence experiment](../supabase/migrations/20260914213000_analyse_posts_cadence_experiment.sql) |
+| `dashboard-v2-cache-refresh-safety-net` | `2-59/5 * * * *`, 12/hour | [cache offset](../supabase/migrations/20260914165500_dashboard_v2_cache_cron_offset.sql) |
+| `reclaim-stuck-processing-analyses` | `3-59/10 * * * *`, 6/hour | [stale recovery](../supabase/migrations/20260914201500_reclaim_stuck_processing_analyses.sql) |
 
 Earlier analysis schedules (15 then 5 minutes) are superseded. The README also
 misstates the analysis ceiling as 50 and describes an obsolete Legacy/V2 review
@@ -273,7 +286,7 @@ engagement, media, provider usage or full external payload is collected.
    Inspect hourly sample counts, cache hits, failures and short-content exclusions
    before claiming statistical reliability. A full rotation takes about 12 hours;
    larger rolling/day-level aggregates are more stable than small topic buckets.
-6. Run the read-only [operator script](supabase/scripts/retention-operations.sql).
+6. Run the read-only [operator script](../supabase/scripts/retention-operations.sql).
    Its `preview_sentiment_retention()` query lists exact deletion counts per
    disposable table. Obtain approval for those counts and then run only the
    commented enable block. It enables both the setting and cron flag atomically.
@@ -389,31 +402,31 @@ organic coverage before raising or lowering the limits.
 ## Exact Changed Files
 
 Runtime:
-- [app.js](app.js)
-- [supabase/functions/_shared/costControls.ts](supabase/functions/_shared/costControls.ts)
-- [supabase/functions/ingest-bluesky-search/index.ts](supabase/functions/ingest-bluesky-search/index.ts)
-- [supabase/functions/analyse-posts/index.ts](supabase/functions/analyse-posts/index.ts)
+- [app.js](../app.js)
+- [supabase/functions/_shared/costControls.ts](../supabase/functions/_shared/costControls.ts)
+- [supabase/functions/ingest-bluesky-search/index.ts](../supabase/functions/ingest-bluesky-search/index.ts)
+- [supabase/functions/analyse-posts/index.ts](../supabase/functions/analyse-posts/index.ts)
 
 SQL migrations and operator procedure:
-- [supabase/migrations/20261005090000_pipeline_cost_controls.sql](supabase/migrations/20261005090000_pipeline_cost_controls.sql)
-- [supabase/migrations/20261005091000_retention_indexes.sql](supabase/migrations/20261005091000_retention_indexes.sql)
-- [supabase/migrations/20261005092000_retention_cleanup.sql](supabase/migrations/20261005092000_retention_cleanup.sql)
-- [supabase/migrations/20261005093000_cost_control_schedules.sql](supabase/migrations/20261005093000_cost_control_schedules.sql)
-- [supabase/migrations/20261005094000_recent_sentiment_reporting.sql](supabase/migrations/20261005094000_recent_sentiment_reporting.sql)
-- [supabase/scripts/retention-operations.sql](supabase/scripts/retention-operations.sql)
+- [supabase/migrations/20261005090000_pipeline_cost_controls.sql](../supabase/migrations/20261005090000_pipeline_cost_controls.sql)
+- [supabase/migrations/20261005091000_retention_indexes.sql](../supabase/migrations/20261005091000_retention_indexes.sql)
+- [supabase/migrations/20261005092000_retention_cleanup.sql](../supabase/migrations/20261005092000_retention_cleanup.sql)
+- [supabase/migrations/20261005093000_cost_control_schedules.sql](../supabase/migrations/20261005093000_cost_control_schedules.sql)
+- [supabase/migrations/20261005094000_recent_sentiment_reporting.sql](../supabase/migrations/20261005094000_recent_sentiment_reporting.sql)
+- [supabase/scripts/retention-operations.sql](../supabase/scripts/retention-operations.sql)
 
 Tests and validation:
-- [supabase/functions/analyse-posts/batchLoop.test.ts](supabase/functions/analyse-posts/batchLoop.test.ts)
-- [supabase/functions/analyse-posts/batchSize.test.ts](supabase/functions/analyse-posts/batchSize.test.ts)
-- [supabase/functions/analyse-posts/candidateScan.test.ts](supabase/functions/analyse-posts/candidateScan.test.ts)
-- [supabase/functions/ingest-bluesky-search/index.test.ts](supabase/functions/ingest-bluesky-search/index.test.ts)
-- [supabase/scripts/test-edge-node.mjs](supabase/scripts/test-edge-node.mjs)
-- [supabase/scripts/test-cost-controls.mjs](supabase/scripts/test-cost-controls.mjs)
-- [supabase/scripts/check-types.mjs](supabase/scripts/check-types.mjs)
+- [supabase/functions/analyse-posts/batchLoop.test.ts](../supabase/functions/analyse-posts/batchLoop.test.ts)
+- [supabase/functions/analyse-posts/batchSize.test.ts](../supabase/functions/analyse-posts/batchSize.test.ts)
+- [supabase/functions/analyse-posts/candidateScan.test.ts](../supabase/functions/analyse-posts/candidateScan.test.ts)
+- [supabase/functions/ingest-bluesky-search/index.test.ts](../supabase/functions/ingest-bluesky-search/index.test.ts)
+- [supabase/scripts/test-edge-node.mjs](../supabase/scripts/test-edge-node.mjs)
+- [supabase/scripts/test-cost-controls.mjs](../supabase/scripts/test-cost-controls.mjs)
+- [supabase/scripts/check-types.mjs](../supabase/scripts/check-types.mjs)
 
 Documentation:
-- [README.md](README.md)
-- [COST_OPTIMIZATION.md](COST_OPTIMIZATION.md)
+- [history-2026-10-16-readme.md](history-2026-10-16-readme.md)
+- [history-2026-10-05-cost-optimization.md](history-2026-10-05-cost-optimization.md)
 
 ## Three Largest Expected Savings
 
